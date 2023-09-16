@@ -55,17 +55,17 @@ public:
 	EpollTcpServer(const std::string& local_ip, uint16_t local_port);
 
 public:
-	bool Start();
-	bool Stop();
-	int32_t SendData(const PacketPtr& data);
-	void RegisterOnRecvCallback(CallbackRecv callback);
-	void UnRegisterOnRecvCallback();
+	bool start();
+	bool stop();
+	int32_t sendData(const PacketPtr& data);
+	void registerOnRecvCallback(CallbackRecv callback);
+	void unRegisterOnRecvCallback();
 
 protected:
-	void OnSocketAccept();
-	void OnSocketRead(int32_t fd);
-	void OnSocketWrite(int32_t fd);
-	void EpollLoop();
+	void onSocketAccept();
+	void onSocketRead(int32_t fd);
+	void onSocketWrite(int32_t fd);
+	void epollLoop();
 
 private:
 	constexpr static uint32_t EPOLL_WAIT_TIME = 10;
@@ -87,10 +87,10 @@ EpollTcpServer::EpollTcpServer(const std::string& localIp, uint16_t localPort)
 
 EpollTcpServer::~EpollTcpServer()
 {
-	Stop();
+	stop();
 }
 
-bool EpollTcpServer::Start()
+bool EpollTcpServer::start()
 {
 	epollFd_ = epoll_create(1024);
 	if (epollFd_ < 0) {
@@ -158,7 +158,7 @@ bool EpollTcpServer::Start()
 
 	assert(!reactorThread_);
 
-	reactorThread_ = std::make_shared<std::thread>(&EpollTcpServer::EpollLoop, this);
+	reactorThread_ = std::make_shared<std::thread>(&EpollTcpServer::epollLoop, this);
 	if (!reactorThread_) {
 		return false;
 	}
@@ -167,17 +167,17 @@ bool EpollTcpServer::Start()
 	return true;
 }
 
-bool EpollTcpServer::Stop()
+bool EpollTcpServer::stop()
 {
 	isShutdown_ = true;
 	::close(listenFd_);
 	::close(epollFd_);
 	INFO("stop epoll!");
-	UnRegisterOnRecvCallback();
+	unRegisterOnRecvCallback();
 	return true;
 }
 
-void EpollTcpServer::OnSocketAccept()
+void EpollTcpServer::onSocketAccept()
 {
 	while (true) {
 		struct sockaddr_in clientAddr;
@@ -221,19 +221,19 @@ void EpollTcpServer::OnSocketAccept()
 	}
 }
 
-void EpollTcpServer::RegisterOnRecvCallback(CallbackRecv callback)
+void EpollTcpServer::registerOnRecvCallback(CallbackRecv callback)
 {
 	assert(!recvCallback_);
 	recvCallback_ = callback;
 }
 
-void EpollTcpServer::UnRegisterOnRecvCallback()
+void EpollTcpServer::unRegisterOnRecvCallback()
 {
 	assert(recvCallback_);
 	recvCallback_ = nullptr;
 }
 
-void EpollTcpServer::OnSocketRead(int32_t fd)
+void EpollTcpServer::onSocketRead(int32_t fd)
 {
 	char read_buf[4096];
 	bzero(read_buf, sizeof(read_buf));
@@ -259,13 +259,13 @@ void EpollTcpServer::OnSocketRead(int32_t fd)
 	}
 }
 
-void EpollTcpServer::OnSocketWrite(int32_t fd)
+void EpollTcpServer::onSocketWrite(int32_t fd)
 {
 	// TODO(smaugx) not care for now
 	INFO("fd: %d writeable!", fd);
 }
 
-int32_t EpollTcpServer::SendData(const PacketPtr& data)
+int32_t EpollTcpServer::sendData(const PacketPtr& data)
 {
 	if (data->fd == -1) {
 		return -1;
@@ -283,7 +283,7 @@ int32_t EpollTcpServer::SendData(const PacketPtr& data)
 	return r;
 }
 
-void EpollTcpServer::EpollLoop()
+void EpollTcpServer::epollLoop()
 {
 	struct epoll_event* alive_events = static_cast<epoll_event*>(calloc(MAX_EPOLL_EVENT, sizeof(epoll_event)));
 	if (!alive_events) {
@@ -306,13 +306,13 @@ void EpollTcpServer::EpollLoop()
 			} else if (events & EPOLLIN) {
 				INFO("epollin");
 				if (fd == listenFd_) {
-					OnSocketAccept();
+					onSocketAccept();
 				} else {
-					OnSocketRead(fd);
+					onSocketRead(fd);
 				}
 			} else if (events & EPOLLOUT) {
 				INFO("epollout");
-				OnSocketWrite(fd);
+				onSocketWrite(fd);
 			} else {
 				ERROR("unknow epoll event!");
 			}
@@ -339,13 +339,13 @@ int main(int argc, char* argv[])
 	}
 
 	auto recvCall = [&](const PacketPtr& data) -> void {
-		epollServer->SendData(data);
+		epollServer->sendData(data);
 		return;
 	};
 
-	epollServer->RegisterOnRecvCallback(recvCall);
+	epollServer->registerOnRecvCallback(recvCall);
 
-	if (!epollServer->Start()) {
+	if (!epollServer->start()) {
 		ERROR("tcp_server start failed!");
 		exit(1);
 	}
@@ -355,7 +355,7 @@ int main(int argc, char* argv[])
 		std::this_thread::sleep_for(std::chrono::seconds(1));
 	}
 
-	epollServer->Stop();
+	epollServer->stop();
 
 	return 0;
 }
