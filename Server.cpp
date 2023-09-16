@@ -17,9 +17,6 @@
 #include <string>
 #include <thread>
 
-static const uint32_t kEpollWaitTime = 10; // epoll wait timeout 10 ms
-static const uint32_t kMaxEvents = 100;	   // epoll wait return max size
-
 // packet of send/recv binary content
 typedef struct Packet {
 public:
@@ -88,6 +85,8 @@ protected:
 	void EpollLoop();
 
 private:
+	constexpr static uint32_t EPOLL_WAIT_TIME = 10;
+	constexpr static uint32_t MAX_EPOLL_EVENT = 100;
 	std::string localIp_;								   // tcp local ip
 	uint16_t localPort_ = 0;							   // tcp bind local port
 	int32_t listenFd_ = -1;								   // listenfd
@@ -364,7 +363,7 @@ int32_t EpollTcpServer::SendData(const PacketPtr& data)
 void EpollTcpServer::EpollLoop()
 {
 	// request some memory, if events ready, socket events will copy to this memory from kernel
-	struct epoll_event* alive_events = static_cast<epoll_event*>(calloc(kMaxEvents, sizeof(epoll_event)));
+	struct epoll_event* alive_events = static_cast<epoll_event*>(calloc(MAX_EPOLL_EVENT, sizeof(epoll_event)));
 	if (!alive_events) {
 		std::cout << "calloc memory failed for epoll_events!" << std::endl;
 		return;
@@ -372,7 +371,7 @@ void EpollTcpServer::EpollLoop()
 	// if isShutdown_ is true, will exit this loop
 	while (!isShutdown_) {
 		// call epoll_wait and return ready socket
-		int num = epoll_wait(epollFd_, alive_events, kMaxEvents, kEpollWaitTime);
+		int num = epoll_wait(epollFd_, alive_events, MAX_EPOLL_EVENT, EPOLL_WAIT_TIME);
 
 		for (int i = 0; i < num; ++i) {
 			// get fd
