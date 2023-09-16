@@ -62,27 +62,54 @@ public:
 	void unRegisterOnRecvCallback();
 
 protected:
-	void onSocketAccept();
+	void onAcceptEvent();
 	void onSocketRead(int32_t fd);
 	void onSocketWrite(int32_t fd);
 	void acceptReactorThreadFn();
+	void clientReactorThreadFn(int handleClient);
+	void clientWorkerThreadFn();
 
 private:
 	constexpr static uint32_t EPOLL_WAIT_TIME = 10;
 	constexpr static uint32_t MAX_EPOLL_EVENT = 100;
+	constexpr static int MAX_EPOLL_ADD_FD_NUM = 1024;
 	std::string localIp_;
 	uint16_t localPort_ = 0;
 	int32_t listenFd_ = -1;
-	int32_t epollFd_ = -1;
+	int32_t acceptEpollFd_ = -1;
 	std::unique_ptr<std::thread> acceptReactorThread_ = nullptr;
 	bool isShutdown_ = false;
 	CallbackRecv recvCallback_ = nullptr;
+	int threadNum = std::thread::hardware_concurrency();
+	int clientReactorThreadNum = threadNum / 4;
+	int clientWorkerThreadNum = threadNum - clientReactorThreadNum;
+	std::vector<std::unique_ptr<std::thread>> clientReactorThread_;
+	std::vector<std::unique_ptr<std::thread>> clientWorkerThread_;
+	std::vector<int32_t> clientEpollFd_;
 };
 
 EpollTcpServer::EpollTcpServer(const std::string& localIp, uint16_t localPort)
 	: localIp_ { localIp }
 	, localPort_ { localPort }
 {
+	for (int i = 0; i < clientReactorThreadNum; i++) {
+		int32_t epollFd = epoll_create(MAX_EPOLL_ADD_FD_NUM);
+		clientEpollFd_.emplace_back(epollFd);
+	}
+	for (int i = 0; i < clientReactorThreadNum; i++) {
+		auto clientReactorThread = std::make_unique<std::thread>(&EpollTcpServer::clientReactorThreadFn, this, i);
+		clientReactorThread_.emplace_back(std::move(clientReactorThread));
+	}
+	for (int i = 0; i < clientWorkerThreadNum; i++) {
+		auto clientWorkerThread = std::make_unique<std::thread>(&EpollTcpServer::clientWorkerThreadFn, this);
+		clientWorkerThread_.emplace_back(std::move(clientWorkerThread));
+	}
+	for (int i = 0; i < clientReactorThreadNum; i++) {
+		clientReactorThread_[i]->detach();
+	}
+	for (int i = 0; i < clientWorkerThreadNum; i++) {
+		clientWorkerThread_[i]->detach();
+	}
 }
 
 EpollTcpServer::~EpollTcpServer()
@@ -92,8 +119,8 @@ EpollTcpServer::~EpollTcpServer()
 
 bool EpollTcpServer::start()
 {
-	epollFd_ = epoll_create(1024);
-	if (epollFd_ < 0) {
+	acceptEpollFd_ = epoll_create(MAX_EPOLL_ADD_FD_NUM);
+	if (acceptEpollFd_ < 0) {
 		ERROR("epoll_create failed!");
 		return false;
 	}
@@ -101,7 +128,7 @@ bool EpollTcpServer::start()
 	listenFd_ = ::socket(AF_INET, SOCK_STREAM, 0);
 	if (listenFd_ < 0) {
 		ERROR("create socket %s:%u failed!", localIp_.c_str(), localPort_);
-		return -1;
+		return false;
 	}
 
 	struct sockaddr_in serverAddr;
@@ -114,7 +141,7 @@ bool EpollTcpServer::start()
 	if (ret != 0) {
 		ERROR("bind socket %s:%u failed!", localIp_.c_str(), localPort_);
 		::close(listenFd_);
-		return -1;
+		return false;
 	}
 	INFO("create and bind socket %s:%u success!", localIp_.c_str(), localPort_);
 
@@ -149,8 +176,8 @@ bool EpollTcpServer::start()
 	struct epoll_event evt;
 	evt.events = EPOLLIN | EPOLLOUT | EPOLLET;
 	evt.data.fd = listenFd_;
-	INFO("%s fd %d events read %d write %d", "add", listenFd_, evt.events & EPOLLIN, evt.events & EPOLLOUT);
-	ret = epoll_ctl(epollFd_, EPOLL_CTL_ADD, listenFd_, &evt);
+	DEBUG("%s fd %d events read %d write %d", "add", listenFd_, !!(evt.events & EPOLLIN), !!(evt.events & EPOLLOUT));
+	ret = epoll_ctl(acceptEpollFd_, EPOLL_CTL_ADD, listenFd_, &evt);
 	if (ret < 0) {
 		ERROR("epoll_ctl failed!");
 		return false;
@@ -171,13 +198,16 @@ bool EpollTcpServer::stop()
 {
 	isShutdown_ = true;
 	::close(listenFd_);
-	::close(epollFd_);
+	::close(acceptEpollFd_);
+	for (size_t i = 0; i < clientEpollFd_.size(); i++) {
+		::close(clientEpollFd_[i]);
+	}
 	INFO("stop epoll!");
 	unRegisterOnRecvCallback();
 	return true;
 }
 
-void EpollTcpServer::onSocketAccept()
+void EpollTcpServer::onAcceptEvent()
 {
 	while (true) {
 		struct sockaddr_in clientAddr;
@@ -208,11 +238,12 @@ void EpollTcpServer::onSocketAccept()
 			continue;
 		}
 
+		int32_t clientEpollFd = clientEpollFd_[clientFd % clientReactorThreadNum];
 		struct epoll_event evt;
 		evt.events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET;
 		evt.data.fd = clientFd;
-		INFO("%s fd %d events read %d write %d", "add", clientFd, evt.events & EPOLLIN, evt.events & EPOLLOUT);
-		ret = epoll_ctl(epollFd_, EPOLL_CTL_ADD, clientFd, &evt);
+		DEBUG("%s fd %d events read %d write %d", "add", clientFd, !!(evt.events & EPOLLIN), !!(evt.events & EPOLLOUT));
+		ret = epoll_ctl(clientEpollFd, EPOLL_CTL_ADD, clientFd, &evt);
 		if (ret < 0) {
 			ERROR("epoll_ctl failed!");
 			::close(clientFd);
@@ -287,7 +318,30 @@ void EpollTcpServer::acceptReactorThreadFn()
 {
 	struct epoll_event events[MAX_EPOLL_EVENT];
 	while (!isShutdown_) {
-		int eventNum = epoll_wait(epollFd_, events, MAX_EPOLL_EVENT, EPOLL_WAIT_TIME);
+		int eventNum = epoll_wait(acceptEpollFd_, events, MAX_EPOLL_EVENT, EPOLL_WAIT_TIME);
+
+		for (int i = 0; i < eventNum; ++i) {
+			int fd = events[i].data.fd;
+			int event = events[i].events;
+
+			if (event & EPOLLIN) {
+				DEBUG("epollin");
+				if (fd == listenFd_) {
+					onAcceptEvent();
+				}
+			} else {
+				ERROR("fd %d Event %d should not handle in accept reactor", fd, event);
+			}
+		}
+	}
+}
+
+void EpollTcpServer::clientReactorThreadFn(int handleClient)
+{
+	int epollFd = clientEpollFd_[handleClient];
+	struct epoll_event events[MAX_EPOLL_EVENT];
+	while (true) {
+		int eventNum = epoll_wait(epollFd, events, MAX_EPOLL_EVENT, EPOLL_WAIT_TIME);
 
 		for (int i = 0; i < eventNum; ++i) {
 			int fd = events[i].data.fd;
@@ -300,19 +354,22 @@ void EpollTcpServer::acceptReactorThreadFn()
 				ERROR("fd: %d closed EPOLLRDHUP!", fd);
 				::close(fd);
 			} else if (event & EPOLLIN) {
-				INFO("epollin");
-				if (fd == listenFd_) {
-					onSocketAccept();
-				} else {
-					onSocketRead(fd);
-				}
+				DEBUG("epollin");
+				onSocketRead(fd);
 			} else if (event & EPOLLOUT) {
-				INFO("epollout");
+				DEBUG("epollout");
 				onSocketWrite(fd);
 			} else {
-				ERROR("unknow epoll event!");
+				ERROR("fd %d unknow epoll event %d!", fd, event);
 			}
 		}
+	}
+}
+
+void EpollTcpServer::clientWorkerThreadFn()
+{
+	while (true) {
+		;
 	}
 }
 
@@ -326,7 +383,7 @@ int main(int argc, char* argv[])
 	if (argc >= 3) {
 		localPort = std::atoi(argv[2]);
 	}
-	auto epollServer = std::make_shared<EpollTcpServer>(localIp, localPort);
+	auto epollServer = std::make_unique<EpollTcpServer>(localIp, localPort);
 	if (!epollServer) {
 		ERROR("tcp_server create faield!");
 		exit(-1);
