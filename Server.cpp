@@ -44,53 +44,31 @@ public:
 typedef std::shared_ptr<Packet> PacketPtr;
 
 // callback when packet received
-using callback_recv_t = std::function<void(const PacketPtr& data)>;
-
-// base class of EpollTcpServer, focus on Start(), Stop(), SendData(), RegisterOnRecvCallback()...
-class EpollTcpBase {
-public:
-	EpollTcpBase() = default;
-	EpollTcpBase(const EpollTcpBase& other) = delete;
-	EpollTcpBase& operator=(const EpollTcpBase& other) = delete;
-	EpollTcpBase(EpollTcpBase&& other) = delete;
-	EpollTcpBase& operator=(EpollTcpBase&& other) = delete;
-	virtual ~EpollTcpBase() = default;
-
-public:
-	virtual bool Start() = 0;
-	virtual bool Stop() = 0;
-	virtual int32_t SendData(const PacketPtr& data) = 0;
-	virtual void RegisterOnRecvCallback(callback_recv_t callback) = 0;
-	virtual void UnRegisterOnRecvCallback() = 0;
-};
-
-using ETBase = EpollTcpBase;
-
-typedef std::shared_ptr<ETBase> ETBasePtr;
+using CallbackRecv = std::function<void(const PacketPtr& data)>;
 
 // the implementation of Epoll Tcp Server
-class EpollTcpServer : public ETBase {
+class EpollTcpServer {
 public:
-	EpollTcpServer() = default;
+	EpollTcpServer();
 	EpollTcpServer(const EpollTcpServer& other) = delete;
 	EpollTcpServer& operator=(const EpollTcpServer& other) = delete;
 	EpollTcpServer(EpollTcpServer&& other) = delete;
 	EpollTcpServer& operator=(EpollTcpServer&& other) = delete;
-	~EpollTcpServer() override;
+	~EpollTcpServer();
 
 	// the local ip and port of tcp server
 	EpollTcpServer(const std::string& local_ip, uint16_t local_port);
 
 public:
 	// start tcp server
-	bool Start() override;
+	bool Start();
 	// stop tcp server
-	bool Stop() override;
+	bool Stop();
 	// send packet
-	int32_t SendData(const PacketPtr& data) override;
+	int32_t SendData(const PacketPtr& data);
 	// register a callback when packet received
-	void RegisterOnRecvCallback(callback_recv_t callback) override;
-	void UnRegisterOnRecvCallback() override;
+	void RegisterOnRecvCallback(CallbackRecv callback);
+	void UnRegisterOnRecvCallback();
 
 protected:
 	// create epoll instance using epoll_create and return a fd of epoll
@@ -114,22 +92,18 @@ protected:
 	void EpollLoop();
 
 private:
-	std::string local_ip_;							   // tcp local ip
-	uint16_t local_port_ { 0 };						   // tcp bind local port
-	int32_t handle_ { -1 };							   // listenfd
-	int32_t efd_ { -1 };							   // epoll fd
-	std::shared_ptr<std::thread> th_loop_ { nullptr }; // one loop per thread(call epoll_wait in loop)
-	bool loop_flag_ { true };						   // if loop_flag_ is false, then exit the epoll loop
-	callback_recv_t recv_callback_ { nullptr };		   // callback when received
+	std::string localIp_;								   // tcp local ip
+	uint16_t localPort_ = 0;							   // tcp bind local port
+	int32_t handle_ = -1;								   // listenfd
+	int32_t epollFd_ = -1;								   // epoll fd
+	std::shared_ptr<std::thread> reactorThread_ = nullptr; // one loop per thread(call epoll_wait in loop)
+	bool isShutdown_ = false;							   // if isShutdown_ is true, then exit the epoll loop
+	CallbackRecv recvCallback_ = nullptr;				   // callback when received
 };
 
-using ETServer = EpollTcpServer;
-
-typedef std::shared_ptr<ETServer> ETServerPtr;
-
-EpollTcpServer::EpollTcpServer(const std::string& local_ip, uint16_t local_port)
-	: local_ip_ { local_ip }
-	, local_port_ { local_port }
+EpollTcpServer::EpollTcpServer(const std::string& localIp, uint16_t localPort)
+	: localIp_ { localIp }
+	, localPort_ { localPort }
 {
 }
 
@@ -174,22 +148,22 @@ bool EpollTcpServer::Start()
 	handle_ = listenfd;
 
 	// add listen socket to epoll instance, and focus on event EPOLLIN and EPOLLOUT, actually EPOLLIN is enough
-	int er = UpdateEpollEvents(efd_, EPOLL_CTL_ADD, handle_, EPOLLIN | EPOLLET);
+	int er = UpdateEpollEvents(epollFd_, EPOLL_CTL_ADD, handle_, EPOLLIN | EPOLLET);
 	if (er < 0) {
 		// if something goes wrong, close listen socket and return false
 		::close(handle_);
 		return false;
 	}
 
-	assert(!th_loop_);
+	assert(!reactorThread_);
 
 	// the implementation of one loop per thread: create a thread to loop epoll
-	th_loop_ = std::make_shared<std::thread>(&EpollTcpServer::EpollLoop, this);
-	if (!th_loop_) {
+	reactorThread_ = std::make_shared<std::thread>(&EpollTcpServer::EpollLoop, this);
+	if (!reactorThread_) {
 		return false;
 	}
-	// detach the thread(using loop_flag_ to control the start/stop of loop)
-	th_loop_->detach();
+	// detach the thread(using isShutdown_ to control the start/stop of loop)
+	reactorThread_->detach();
 
 	return true;
 }
@@ -197,10 +171,10 @@ bool EpollTcpServer::Start()
 // stop epoll tcp server and release epoll
 bool EpollTcpServer::Stop()
 {
-	// set loop_flag_ false to stop epoll loop
-	loop_flag_ = false;
+	// set isShutdown_ true to stop epoll loop
+	isShutdown_ = true;
 	::close(handle_);
-	::close(efd_);
+	::close(epollFd_);
 	std::cout << "stop epoll!" << std::endl;
 	UnRegisterOnRecvCallback();
 	return true;
@@ -215,7 +189,7 @@ int32_t EpollTcpServer::CreateEpoll()
 		std::cout << "epoll_create failed!" << std::endl;
 		return -1;
 	}
-	efd_ = epollfd;
+	epollFd_ = epollfd;
 	return epollfd;
 }
 
@@ -224,24 +198,24 @@ int32_t EpollTcpServer::CreateSocket()
 	// create tcp socket
 	int listenfd = ::socket(AF_INET, SOCK_STREAM, 0);
 	if (listenfd < 0) {
-		std::cout << "create socket " << local_ip_ << ":" << local_port_ << " failed!" << std::endl;
+		std::cout << "create socket " << localIp_ << ":" << localPort_ << " failed!" << std::endl;
 		return -1;
 	}
 
 	struct sockaddr_in addr;
 	memset(&addr, 0, sizeof(addr));
 	addr.sin_family = AF_INET;
-	addr.sin_port = htons(local_port_);
-	addr.sin_addr.s_addr = inet_addr(local_ip_.c_str());
+	addr.sin_port = htons(localPort_);
+	addr.sin_addr.s_addr = inet_addr(localIp_.c_str());
 
 	// bind to local ip and local port
 	int r = ::bind(listenfd, (struct sockaddr*)&addr, sizeof(struct sockaddr));
 	if (r != 0) {
-		std::cout << "bind socket " << local_ip_ << ":" << local_port_ << " failed!" << std::endl;
+		std::cout << "bind socket " << localIp_ << ":" << localPort_ << " failed!" << std::endl;
 		::close(listenfd);
 		return -1;
 	}
-	std::cout << "create and bind socket " << local_ip_ << ":" << local_port_ << " success!" << std::endl;
+	std::cout << "create and bind socket " << localIp_ << ":" << localPort_ << " success!" << std::endl;
 	return listenfd;
 }
 
@@ -325,7 +299,7 @@ void EpollTcpServer::OnSocketAccept()
 		}
 
 		//  add this new socket to epoll instance, and focus on EPOLLIN and EPOLLOUT and EPOLLRDHUP event
-		int er = UpdateEpollEvents(efd_, EPOLL_CTL_ADD, cli_fd, EPOLLIN | EPOLLRDHUP | EPOLLET);
+		int er = UpdateEpollEvents(epollFd_, EPOLL_CTL_ADD, cli_fd, EPOLLIN | EPOLLRDHUP | EPOLLET);
 		if (er < 0) {
 			// if something goes wrong, close this new socket
 			::close(cli_fd);
@@ -335,16 +309,16 @@ void EpollTcpServer::OnSocketAccept()
 }
 
 // register a callback when packet received
-void EpollTcpServer::RegisterOnRecvCallback(callback_recv_t callback)
+void EpollTcpServer::RegisterOnRecvCallback(CallbackRecv callback)
 {
-	assert(!recv_callback_);
-	recv_callback_ = callback;
+	assert(!recvCallback_);
+	recvCallback_ = callback;
 }
 
 void EpollTcpServer::UnRegisterOnRecvCallback()
 {
-	assert(recv_callback_);
-	recv_callback_ = nullptr;
+	assert(recvCallback_);
+	recvCallback_ = nullptr;
 }
 
 // handle read events on fd
@@ -360,9 +334,9 @@ void EpollTcpServer::OnSocketRead(int32_t fd)
 		std::string msg(read_buf, n);
 		// create a recv packet
 		PacketPtr data = std::make_shared<Packet>(fd, msg);
-		if (recv_callback_) {
+		if (recvCallback_) {
 			// handle recv packet
-			recv_callback_(data);
+			recvCallback_(data);
 		}
 	}
 	if (n == -1) {
@@ -418,10 +392,10 @@ void EpollTcpServer::EpollLoop()
 		std::cout << "calloc memory failed for epoll_events!" << std::endl;
 		return;
 	}
-	// if loop_flag_ is false, will exit this loop
-	while (loop_flag_) {
+	// if isShutdown_ is true, will exit this loop
+	while (!isShutdown_) {
 		// call epoll_wait and return ready socket
-		int num = epoll_wait(efd_, alive_events, kMaxEvents, kEpollWaitTime);
+		int num = epoll_wait(epollFd_, alive_events, kMaxEvents, kEpollWaitTime);
 
 		for (int i = 0; i < num; ++i) {
 			// get fd
@@ -457,7 +431,7 @@ void EpollTcpServer::EpollLoop()
 			}
 		} // end for (int i = 0; ...
 
-	} // end while (loop_flag_)
+	} // end while (isShutdown_)
 
 	free(alive_events);
 }
