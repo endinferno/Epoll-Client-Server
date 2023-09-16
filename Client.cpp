@@ -215,7 +215,11 @@ bool EpollTcpClient::onWriteEvent(struct TxMsg& txMsg)
 
 int32_t EpollTcpClient::sendData(const void* data, size_t size)
 {
-	struct TxMsg txMsg = txBuffer_.getTxMsg();
+	auto txMsgOption = txBuffer_.getTxMsg();
+	if (!txMsgOption.has_value()) {
+		return -1;
+	}
+	auto txMsg = txMsgOption.value();
 	txMsg.fd = connFd_;
 	txMsg.len = size;
 	memcpy(txMsg.payload, data, size);

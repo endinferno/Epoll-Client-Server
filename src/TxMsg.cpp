@@ -1,6 +1,5 @@
 #include "TxMsg.h"
 #include "Logger.h"
-#include <string.h>
 
 TxBuffer::TxBuffer()
 {
@@ -14,10 +13,15 @@ TxBuffer::TxBuffer()
 	}
 }
 
-struct TxMsg TxBuffer::getTxMsg()
+std::optional<struct TxMsg> TxBuffer::getTxMsg()
 {
 	std::unique_lock<std::mutex> lock(lockMtx);
-	txMemRegionCond_.wait(lock, [this] { return !this->txMemRegionList_.empty(); });
+	if (!txMemRegionCond_.wait_for(lock, txMemGetTimeout_, [this] { return !this->txMemRegionList_.empty(); })) {
+		return std::nullopt;
+	}
+	if (txMemRegionList_.empty()) {
+		return std::nullopt;
+	}
 	struct TxMsg msg = txMemRegionList_.front();
 	txMemRegionList_.pop_front();
 	return msg;

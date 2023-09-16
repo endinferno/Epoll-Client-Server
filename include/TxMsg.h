@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <list>
@@ -15,7 +16,7 @@ struct TxMsg {
 class TxBuffer {
 public:
 	TxBuffer();
-	struct TxMsg getTxMsg();
+	std::optional<struct TxMsg> getTxMsg();
 	void putTxMsg(struct TxMsg& txMsg);
 
 private:
@@ -26,4 +27,5 @@ private:
 	std::unique_ptr<char[]> txMemRegion_ = nullptr;
 	std::list<struct TxMsg> txMemRegionList_;
 	std::condition_variable txMemRegionCond_;
+	std::chrono::milliseconds txMemGetTimeout_ = std::chrono::milliseconds(1);
 };
