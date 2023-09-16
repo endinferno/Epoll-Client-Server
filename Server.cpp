@@ -17,6 +17,8 @@
 #include <string>
 #include <thread>
 
+#include "Logger.h"
+
 typedef struct Packet {
 public:
 	Packet()
@@ -92,13 +94,13 @@ bool EpollTcpServer::Start()
 {
 	epollFd_ = epoll_create(1024);
 	if (epollFd_ < 0) {
-		std::cout << "epoll_create failed!" << std::endl;
+		ERROR("epoll_create failed!");
 		return false;
 	}
 
 	listenFd_ = ::socket(AF_INET, SOCK_STREAM, 0);
 	if (listenFd_ < 0) {
-		std::cout << "create socket " << localIp_ << ":" << localPort_ << " failed!" << std::endl;
+		ERROR("create socket %s:%u failed!", localIp_.c_str(), localPort_);
 		return -1;
 	}
 
@@ -110,11 +112,11 @@ bool EpollTcpServer::Start()
 
 	int ret = ::bind(listenFd_, (struct sockaddr*)&serverAddr, sizeof(struct sockaddr));
 	if (ret != 0) {
-		std::cout << "bind socket " << localIp_ << ":" << localPort_ << " failed!" << std::endl;
+		ERROR("bind socket %s:%u failed!", localIp_.c_str(), localPort_);
 		::close(listenFd_);
 		return -1;
 	}
-	std::cout << "create and bind socket " << localIp_ << ":" << localPort_ << " success!" << std::endl;
+	INFO("create and bind socket %s:%u success!", localIp_.c_str(), localPort_);
 
 	int reuse = 1;
 	ret = setsockopt(listenFd_, SOL_SOCKET, SO_REUSEADDR, (const void*)&reuse, sizeof(reuse));
@@ -128,29 +130,29 @@ bool EpollTcpServer::Start()
 
 	int flags = fcntl(listenFd_, F_GETFL, 0);
 	if (flags < 0) {
-		std::cout << "fcntl failed!" << std::endl;
+		ERROR("fcntl failed!");
 		return false;
 	}
 	ret = fcntl(listenFd_, F_SETFL, flags | O_NONBLOCK);
 	if (ret < 0) {
-		std::cout << "fcntl failed!" << std::endl;
+		ERROR("fcntl failed!");
 		return false;
 	}
 
 	ret = ::listen(listenFd_, SOMAXCONN);
 	if (ret < 0) {
-		std::cout << "listen failed!" << std::endl;
+		ERROR("listen failed!");
 		return false;
 	}
-	std::cout << "EpollTcpServer Init success!" << std::endl;
+	INFO("EpollTcpServer Init success!");
 
 	struct epoll_event evt;
 	evt.events = EPOLLIN | EPOLLOUT | EPOLLET;
 	evt.data.fd = listenFd_;
-	fprintf(stdout, "%s fd %d events read %d write %d\n", "add", listenFd_, evt.events & EPOLLIN, evt.events & EPOLLOUT);
+	INFO("%s fd %d events read %d write %d", "add", listenFd_, evt.events & EPOLLIN, evt.events & EPOLLOUT);
 	ret = epoll_ctl(epollFd_, EPOLL_CTL_ADD, listenFd_, &evt);
 	if (ret < 0) {
-		std::cout << "epoll_ctl failed!" << std::endl;
+		ERROR("epoll_ctl failed!");
 		return false;
 	}
 
@@ -170,7 +172,7 @@ bool EpollTcpServer::Stop()
 	isShutdown_ = true;
 	::close(listenFd_);
 	::close(epollFd_);
-	std::cout << "stop epoll!" << std::endl;
+	INFO("stop epoll!");
 	UnRegisterOnRecvCallback();
 	return true;
 }
@@ -184,24 +186,24 @@ void EpollTcpServer::OnSocketAccept()
 		int clientFd = accept(listenFd_, (struct sockaddr*)&clientAddr, &clientAddrLen);
 		if (clientFd == -1) {
 			if ((errno == EAGAIN) || (errno == EWOULDBLOCK)) {
-				std::cout << "accept all coming connections!" << std::endl;
+				INFO("accept all coming connections!");
 				break;
 			} else {
-				std::cout << "accept error!" << std::endl;
+				ERROR("accept error!");
 				continue;
 			}
 		}
-		std::cout << "accpet connection from " << inet_ntoa(clientAddr.sin_addr) << ":" << ntohs(clientAddr.sin_port) << std::endl;
+		INFO("accpet connection from %s:%d", inet_ntoa(clientAddr.sin_addr), ntohs(clientAddr.sin_port));
 
 		int flags = fcntl(clientFd, F_GETFL, 0);
 		if (flags < 0) {
-			std::cout << "fcntl failed!" << std::endl;
+			ERROR("fcntl failed!");
 			::close(clientFd);
 			continue;
 		}
 		int ret = fcntl(clientFd, F_SETFL, flags | O_NONBLOCK);
 		if (ret < 0) {
-			std::cout << "fcntl failed!" << std::endl;
+			ERROR("fcntl failed!");
 			::close(clientFd);
 			continue;
 		}
@@ -209,10 +211,10 @@ void EpollTcpServer::OnSocketAccept()
 		struct epoll_event evt;
 		evt.events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET;
 		evt.data.fd = clientFd;
-		fprintf(stdout, "%s fd %d events read %d write %d\n", "add", clientFd, evt.events & EPOLLIN, evt.events & EPOLLOUT);
+		INFO("%s fd %d events read %d write %d", "add", clientFd, evt.events & EPOLLIN, evt.events & EPOLLOUT);
 		ret = epoll_ctl(epollFd_, EPOLL_CTL_ADD, clientFd, &evt);
 		if (ret < 0) {
-			std::cout << "epoll_ctl failed!" << std::endl;
+			ERROR("epoll_ctl failed!");
 			::close(clientFd);
 			continue;
 		}
@@ -237,7 +239,7 @@ void EpollTcpServer::OnSocketRead(int32_t fd)
 	bzero(read_buf, sizeof(read_buf));
 	int n = -1;
 	while ((n = ::read(fd, read_buf, sizeof(read_buf))) > 0) {
-		std::cout << "fd: " << fd << " recv: " << read_buf << std::endl;
+		INFO("fd: %d recv: %s", fd, read_buf);
 		std::string msg(read_buf, n);
 		PacketPtr data = std::make_shared<Packet>(fd, msg);
 		if (recvCallback_) {
@@ -260,7 +262,7 @@ void EpollTcpServer::OnSocketRead(int32_t fd)
 void EpollTcpServer::OnSocketWrite(int32_t fd)
 {
 	// TODO(smaugx) not care for now
-	std::cout << "fd: " << fd << " writeable!" << std::endl;
+	INFO("fd: %d writeable!", fd);
 }
 
 int32_t EpollTcpServer::SendData(const PacketPtr& data)
@@ -274,10 +276,10 @@ int32_t EpollTcpServer::SendData(const PacketPtr& data)
 			return -1;
 		}
 		::close(data->fd);
-		std::cout << "fd: " << data->fd << " write error, close it!" << std::endl;
+		ERROR("fd: %d write error, close it!", data->fd);
 		return -1;
 	}
-	std::cout << "fd: " << data->fd << " write size: " << r << " ok!" << std::endl;
+	INFO("fd: %d write size: %d ok!", data->fd, r);
 	return r;
 }
 
@@ -285,7 +287,7 @@ void EpollTcpServer::EpollLoop()
 {
 	struct epoll_event* alive_events = static_cast<epoll_event*>(calloc(MAX_EPOLL_EVENT, sizeof(epoll_event)));
 	if (!alive_events) {
-		std::cout << "calloc memory failed for epoll_events!" << std::endl;
+		ERROR("calloc memory failed for epoll_events!");
 		return;
 	}
 	while (!isShutdown_) {
@@ -296,23 +298,23 @@ void EpollTcpServer::EpollLoop()
 			int events = alive_events[i].events;
 
 			if ((events & EPOLLERR) || (events & EPOLLHUP)) {
-				std::cout << "epoll_wait error!" << std::endl;
+				ERROR("epoll_wait error!");
 				::close(fd);
 			} else if (events & EPOLLRDHUP) {
-				std::cout << "fd:" << fd << " closed EPOLLRDHUP!" << std::endl;
+				ERROR("fd: %d closed EPOLLRDHUP!", fd);
 				::close(fd);
 			} else if (events & EPOLLIN) {
-				std::cout << "epollin" << std::endl;
+				INFO("epollin");
 				if (fd == listenFd_) {
 					OnSocketAccept();
 				} else {
 					OnSocketRead(fd);
 				}
 			} else if (events & EPOLLOUT) {
-				std::cout << "epollout" << std::endl;
+				INFO("epollout");
 				OnSocketWrite(fd);
 			} else {
-				std::cout << "unknow epoll event!" << std::endl;
+				ERROR("unknow epoll event!");
 			}
 		}
 	}
@@ -332,7 +334,7 @@ int main(int argc, char* argv[])
 	}
 	auto epollServer = std::make_shared<EpollTcpServer>(localIp, localPort);
 	if (!epollServer) {
-		std::cout << "tcp_server create faield!" << std::endl;
+		ERROR("tcp_server create faield!");
 		exit(-1);
 	}
 
@@ -344,10 +346,10 @@ int main(int argc, char* argv[])
 	epollServer->RegisterOnRecvCallback(recvCall);
 
 	if (!epollServer->Start()) {
-		std::cout << "tcp_server start failed!" << std::endl;
+		ERROR("tcp_server start failed!");
 		exit(1);
 	}
-	std::cout << "############tcp_server started!################" << std::endl;
+	INFO("############tcp_server started!################");
 
 	while (true) {
 		std::this_thread::sleep_for(std::chrono::seconds(1));
