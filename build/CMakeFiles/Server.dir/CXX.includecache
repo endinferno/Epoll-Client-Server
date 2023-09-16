@@ -1,0 +1,44 @@
+#IncludeRegexLine: ^[ 	]*[#%][ 	]*(include|import)[ 	]*[<"]([^">]+)([">])
+
+#IncludeRegexScan: ^.*$
+
+#IncludeRegexComplain: ^$
+
+#IncludeRegexTransform: 
+
+/nvme/software/epoll-socket/Server.cpp
+arpa/inet.h
+-
+asm-generic/socket.h
+-
+cassert
+-
+cstring
+-
+errno.h
+-
+fcntl.h
+-
+netinet/in.h
+-
+stdio.h
+-
+stdlib.h
+-
+sys/epoll.h
+-
+sys/socket.h
+-
+unistd.h
+-
+functional
+-
+iostream
+-
+memory
+-
+string
+-
+thread
+-
+
