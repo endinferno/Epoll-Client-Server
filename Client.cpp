@@ -44,7 +44,7 @@ protected:
 	void onSocketRead(int32_t fd);
 	void onRead(struct RxMsg& rxMsg);
 	// void onSocketWrite(int32_t fd);
-	void onSocketWrite(struct TxMsg& txMsg);
+	void onWriteEvent(struct TxMsg& txMsg);
 	void eventLoop();
 	void workerThreadFn();
 
@@ -194,7 +194,7 @@ void EpollTcpClient::onRead(struct RxMsg& rxMsg)
 }
 
 // void EpollTcpClient::onSocketWrite(int32_t fd)
-void EpollTcpClient::onSocketWrite(struct TxMsg& txMsg)
+void EpollTcpClient::onWriteEvent(struct TxMsg& txMsg)
 {
 	int ret = ::write(connFd_, txMsg.payload, txMsg.len);
 	INFO("fd: %d writeable! ret %d", txMsg.fd, ret);
@@ -255,7 +255,7 @@ void EpollTcpClient::workerThreadFn()
 			// onSocketRead(workerEvent.msg.rxMsg);
 			onRead(workerEvent.msg.rxMsg);
 		} else if (workerEvent.type == WRITE) {
-			onSocketWrite(workerEvent.msg.txMsg);
+			onWriteEvent(workerEvent.msg.txMsg);
 		}
 	}
 }
