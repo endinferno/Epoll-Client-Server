@@ -174,7 +174,7 @@ bool EpollTcpServer::start()
 	INFO("EpollTcpServer Init success!");
 
 	struct epoll_event evt;
-	evt.events = EPOLLIN | EPOLLOUT | EPOLLET;
+	evt.events = EPOLLIN | EPOLLET;
 	evt.data.fd = listenFd_;
 	DEBUG("%s fd %d events read %d write %d", "add", listenFd_, !!(evt.events & EPOLLIN), !!(evt.events & EPOLLOUT));
 	ret = epoll_ctl(acceptEpollFd_, EPOLL_CTL_ADD, listenFd_, &evt);
