@@ -41,8 +41,7 @@ public:
 	void unRegisterOnRecvCallback();
 
 protected:
-	void onSocketRead(int32_t fd);
-	void onRead(struct RxMsg& rxMsg);
+	void onReadEvent(struct RxMsg& rxMsg);
 	bool onWriteEvent(struct TxMsg& txMsg);
 	void eventLoop();
 	void workerThreadFn();
@@ -50,6 +49,7 @@ protected:
 private:
 	constexpr static uint32_t EPOLL_WAIT_TIME = 10;
 	constexpr static uint32_t MAX_EPOLL_EVENT = 100;
+	constexpr static int BUFFER_SIZE = 2048;
 	std::string serverIp_;
 	uint16_t serverPort_ = 0;
 	int32_t connFd_ = -1;
@@ -60,6 +60,7 @@ private:
 	CallbackRecv recvCallback_ = nullptr;
 	struct epoll_event events[MAX_EPOLL_EVENT];
 	TxBuffer txBuffer_;
+	char rxBuffer_[BUFFER_SIZE];
 	EventChannel eventChannel_;
 	bool isKernelSendBufferFull_ = false;
 	std::shared_mutex kernelSendBufferFullMtx_;
@@ -166,14 +167,13 @@ void EpollTcpClient::unRegisterOnRecvCallback()
 	recvCallback_ = nullptr;
 }
 
-void EpollTcpClient::onSocketRead(int32_t fd)
+void EpollTcpClient::onReadEvent(struct RxMsg& rxMsg)
 {
-	char readBuf[4096];
-	bzero(readBuf, sizeof(readBuf));
 	int readBytes = -1;
-	while ((readBytes = ::read(fd, readBuf, sizeof(readBuf))) > 0) {
+	int fd = rxMsg.fd;
+	while ((readBytes = ::read(fd, rxBuffer_, BUFFER_SIZE - 1)) > 0) {
 		if (recvCallback_) {
-			recvCallback_(readBuf, readBytes);
+			recvCallback_(rxBuffer_, readBytes);
 		}
 	}
 	if (readBytes == -1) {
@@ -187,11 +187,6 @@ void EpollTcpClient::onSocketRead(int32_t fd)
 		::close(fd);
 		return;
 	}
-}
-
-void EpollTcpClient::onRead(struct RxMsg& rxMsg)
-{
-	DEBUG("123");
 }
 
 bool EpollTcpClient::onWriteEvent(struct TxMsg& txMsg)
@@ -245,7 +240,12 @@ void EpollTcpClient::eventLoop()
 				INFO("fd: %d closed EPOLLRDHUP!", fd);
 				::close(fd);
 			} else if (event & EPOLLIN) {
-				onSocketRead(fd);
+				struct RxMsg rxMsg;
+				rxMsg.fd = fd;
+				struct WorkerEvent workerEvent;
+				workerEvent.type = READ;
+				workerEvent.msg.rxMsg = rxMsg;
+				eventChannel_.push(workerEvent);
 			} else if (event & EPOLLOUT) {
 				INFO("EPOLLOUT event");
 				kernelSendBufferFullMtx_.lock();
@@ -263,8 +263,7 @@ void EpollTcpClient::workerThreadFn()
 	while (true) {
 		auto workerEvent = eventChannel_.pop();
 		if (workerEvent.type == READ) {
-			// onSocketRead(workerEvent.msg.rxMsg);
-			onRead(workerEvent.msg.rxMsg);
+			onReadEvent(workerEvent.msg.rxMsg);
 		} else if (workerEvent.type == WRITE) {
 			bool kernelSendBufferFull = false;
 			kernelSendBufferFullMtx_.lock_shared();
