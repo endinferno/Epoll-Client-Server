@@ -68,13 +68,6 @@ public:
 	void UnRegisterOnRecvCallback();
 
 protected:
-	// set socket noblock
-	int32_t MakeSocketNonBlock(int32_t fd);
-	// listen()
-	int32_t Listen(int32_t listenfd);
-	// add/modify/remove a item(socket/fd) in epoll instance(rbtree), for this example, just add a socket to epoll rbtree
-	int32_t UpdateEpollEvents(int efd, int op, int fd, int events);
-
 	// handle tcp accept event
 	void OnSocketAccept();
 	// handle tcp socket readable event(read())
@@ -109,16 +102,12 @@ EpollTcpServer::~EpollTcpServer()
 
 bool EpollTcpServer::Start()
 {
-	// create epoll instance
-	// the basic epoll api of create a epoll instance
 	epollFd_ = epoll_create(1024);
 	if (epollFd_ < 0) {
-		// if something goes wrong, return -1
 		std::cout << "epoll_create failed!" << std::endl;
 		return false;
 	}
 
-	// create tcp socket
 	listenFd_ = ::socket(AF_INET, SOCK_STREAM, 0);
 	if (listenFd_ < 0) {
 		std::cout << "create socket " << localIp_ << ":" << localPort_ << " failed!" << std::endl;
@@ -131,7 +120,6 @@ bool EpollTcpServer::Start()
 	serverAddr.sin_port = htons(localPort_);
 	serverAddr.sin_addr.s_addr = inet_addr(localIp_.c_str());
 
-	// bind to local ip and local port
 	int ret = ::bind(listenFd_, (struct sockaddr*)&serverAddr, sizeof(struct sockaddr));
 	if (ret != 0) {
 		std::cout << "bind socket " << localIp_ << ":" << localPort_ << " failed!" << std::endl;
@@ -149,24 +137,32 @@ bool EpollTcpServer::Start()
 	if (ret < 0) {
 		return false;
 	}
-	// set listen socket noblock
-	ret = MakeSocketNonBlock(listenFd_);
+
+	int flags = fcntl(listenFd_, F_GETFL, 0);
+	if (flags < 0) {
+		std::cout << "fcntl failed!" << std::endl;
+		return false;
+	}
+	ret = fcntl(listenFd_, F_SETFL, flags | O_NONBLOCK);
 	if (ret < 0) {
+		std::cout << "fcntl failed!" << std::endl;
 		return false;
 	}
 
-	// call listen()
-	ret = Listen(listenFd_);
+	ret = ::listen(listenFd_, SOMAXCONN);
 	if (ret < 0) {
+		std::cout << "listen failed!" << std::endl;
 		return false;
 	}
 	std::cout << "EpollTcpServer Init success!" << std::endl;
 
-	// add listen socket to epoll instance, and focus on event EPOLLIN and EPOLLOUT, actually EPOLLIN is enough
-	int er = UpdateEpollEvents(epollFd_, EPOLL_CTL_ADD, listenFd_, EPOLLIN | EPOLLET);
-	if (er < 0) {
-		// if something goes wrong, close listen socket and return false
-		::close(listenFd_);
+	struct epoll_event evt;
+	evt.events = EPOLLIN | EPOLLOUT | EPOLLET;
+	evt.data.fd = listenFd_;
+	fprintf(stdout, "%s fd %d events read %d write %d\n", "add", listenFd_, evt.events & EPOLLIN, evt.events & EPOLLOUT);
+	ret = epoll_ctl(epollFd_, EPOLL_CTL_ADD, listenFd_, &evt);
+	if (ret < 0) {
+		std::cout << "epoll_ctl failed!" << std::endl;
 		return false;
 	}
 
@@ -195,60 +191,17 @@ bool EpollTcpServer::Stop()
 	return true;
 }
 
-// set noblock fd
-int32_t EpollTcpServer::MakeSocketNonBlock(int32_t fd)
-{
-	int flags = fcntl(fd, F_GETFL, 0);
-	if (flags < 0) {
-		std::cout << "fcntl failed!" << std::endl;
-		return -1;
-	}
-	int r = fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-	if (r < 0) {
-		std::cout << "fcntl failed!" << std::endl;
-		return -1;
-	}
-	return 0;
-}
-
-// call listen() api and set listen queue size using SOMAXCONN
-int32_t EpollTcpServer::Listen(int32_t listenfd)
-{
-	int r = ::listen(listenfd, SOMAXCONN);
-	if (r < 0) {
-		std::cout << "listen failed!" << std::endl;
-		return -1;
-	}
-	return 0;
-}
-
-// add/modify/remove a item(socket/fd) in epoll instance(rbtree), for this example, just add a socket to epoll rbtree
-int32_t EpollTcpServer::UpdateEpollEvents(int efd, int op, int fd, int events)
-{
-	struct epoll_event ev;
-	memset(&ev, 0, sizeof(ev));
-	ev.events = events;
-	ev.data.fd = fd; // ev.data is a enum
-	fprintf(stdout, "%s fd %d events read %d write %d\n", op == EPOLL_CTL_MOD ? "mod" : "add", fd, ev.events & EPOLLIN, ev.events & EPOLLOUT);
-	int r = epoll_ctl(efd, op, fd, &ev);
-	if (r < 0) {
-		std::cout << "epoll_ctl failed!" << std::endl;
-		return -1;
-	}
-	return 0;
-}
-
 // handle accept event
 void EpollTcpServer::OnSocketAccept()
 {
 	// epoll working on et mode, must read all coming data, so use a while loop here
 	while (true) {
-		struct sockaddr_in in_addr;
-		socklen_t in_len = sizeof(in_addr);
+		struct sockaddr_in clientAddr;
+		socklen_t clientAddrLen = sizeof(clientAddr);
 
 		// accept a new connection and get a new socket
-		int cli_fd = accept(listenFd_, (struct sockaddr*)&in_addr, &in_len);
-		if (cli_fd == -1) {
+		int clientFd = accept(listenFd_, (struct sockaddr*)&clientAddr, &clientAddrLen);
+		if (clientFd == -1) {
 			if ((errno == EAGAIN) || (errno == EWOULDBLOCK)) {
 				// read all accept finished(epoll et mode only trigger one time,so must read all data in listen socket)
 				std::cout << "accept all coming connections!" << std::endl;
@@ -258,27 +211,29 @@ void EpollTcpServer::OnSocketAccept()
 				continue;
 			}
 		}
+		std::cout << "accpet connection from " << inet_ntoa(clientAddr.sin_addr) << ":" << ntohs(clientAddr.sin_port) << std::endl;
 
-		sockaddr_in peer;
-		socklen_t p_len = sizeof(peer);
-		// get client ip and port
-		int r = getpeername(cli_fd, (struct sockaddr*)&peer, &p_len);
-		if (r < 0) {
-			std::cout << "getpeername error!" << std::endl;
+		int flags = fcntl(clientFd, F_GETFL, 0);
+		if (flags < 0) {
+			std::cout << "fcntl failed!" << std::endl;
+			::close(clientFd);
 			continue;
 		}
-		std::cout << "accpet connection from " << inet_ntoa(in_addr.sin_addr) << std::endl;
-		int mr = MakeSocketNonBlock(cli_fd);
-		if (mr < 0) {
-			::close(cli_fd);
+		int ret = fcntl(clientFd, F_SETFL, flags | O_NONBLOCK);
+		if (ret < 0) {
+			std::cout << "fcntl failed!" << std::endl;
+			::close(clientFd);
 			continue;
 		}
 
-		//  add this new socket to epoll instance, and focus on EPOLLIN and EPOLLOUT and EPOLLRDHUP event
-		int er = UpdateEpollEvents(epollFd_, EPOLL_CTL_ADD, cli_fd, EPOLLIN | EPOLLRDHUP | EPOLLET);
-		if (er < 0) {
-			// if something goes wrong, close this new socket
-			::close(cli_fd);
+		struct epoll_event evt;
+		evt.events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET;
+		evt.data.fd = clientFd;
+		fprintf(stdout, "%s fd %d events read %d write %d\n", "add", clientFd, evt.events & EPOLLIN, evt.events & EPOLLOUT);
+		ret = epoll_ctl(epollFd_, EPOLL_CTL_ADD, clientFd, &evt);
+		if (ret < 0) {
+			std::cout << "epoll_ctl failed!" << std::endl;
+			::close(clientFd);
 			continue;
 		}
 	}
