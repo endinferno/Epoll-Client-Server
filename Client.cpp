@@ -13,6 +13,7 @@
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <shared_mutex>
 #include <string>
 #include <thread>
 
@@ -43,8 +44,7 @@ public:
 protected:
 	void onSocketRead(int32_t fd);
 	void onRead(struct RxMsg& rxMsg);
-	// void onSocketWrite(int32_t fd);
-	void onWriteEvent(struct TxMsg& txMsg);
+	bool onWriteEvent(struct TxMsg& txMsg);
 	void eventLoop();
 	void workerThreadFn();
 
@@ -62,6 +62,8 @@ private:
 	struct epoll_event events[MAX_EPOLL_EVENT];
 	TxBuffer txBuffer_;
 	EventChannel eventChannel_;
+	bool isKernelSendBufferFull_ = false;
+	std::shared_mutex kernelSendBufferFullMtx_;
 };
 
 EpollTcpClient::EpollTcpClient(const std::string& serverIp, uint16_t serverPort)
@@ -193,19 +195,22 @@ void EpollTcpClient::onRead(struct RxMsg& rxMsg)
 	DEBUG("123");
 }
 
-// void EpollTcpClient::onSocketWrite(int32_t fd)
-void EpollTcpClient::onWriteEvent(struct TxMsg& txMsg)
+bool EpollTcpClient::onWriteEvent(struct TxMsg& txMsg)
 {
 	int ret = ::write(connFd_, txMsg.payload, txMsg.len);
-	INFO("fd: %d writeable! ret %d", txMsg.fd, ret);
+	INFO("fd: %d writeable! len %zu ret %d errno %d", txMsg.fd, txMsg.len, ret, errno);
 	if (ret == -1) {
 		if (errno == EAGAIN || errno == EWOULDBLOCK) {
-			return;
+			return false;
 		}
 		::close(connFd_);
 		ERROR("fd: %d write error, close it!", connFd_);
-		return;
+		return false;
+	} else if (ret == (int)txMsg.len) {
+		txBuffer_.putTxMsg(txMsg);
+		return true;
 	}
+	return false;
 }
 
 int32_t EpollTcpClient::sendData(const void* data, size_t size)
@@ -239,7 +244,10 @@ void EpollTcpClient::eventLoop()
 			} else if (event & EPOLLIN) {
 				onSocketRead(fd);
 			} else if (event & EPOLLOUT) {
-				// onSocketWrite(fd);
+				INFO("EPOLLOUT event");
+				kernelSendBufferFullMtx_.lock();
+				isKernelSendBufferFull_ = false;
+				kernelSendBufferFullMtx_.unlock();
 			} else {
 				ERROR("unknow epoll event!");
 			}
@@ -255,7 +263,20 @@ void EpollTcpClient::workerThreadFn()
 			// onSocketRead(workerEvent.msg.rxMsg);
 			onRead(workerEvent.msg.rxMsg);
 		} else if (workerEvent.type == WRITE) {
-			onWriteEvent(workerEvent.msg.txMsg);
+			bool kernelSendBufferFull = false;
+			kernelSendBufferFullMtx_.lock_shared();
+			kernelSendBufferFull = isKernelSendBufferFull_;
+			kernelSendBufferFullMtx_.unlock_shared();
+			if (kernelSendBufferFull) {
+				eventChannel_.push(workerEvent);
+				continue;
+			}
+			if (!onWriteEvent(workerEvent.msg.txMsg)) {
+				eventChannel_.push(workerEvent);
+				kernelSendBufferFullMtx_.lock();
+				isKernelSendBufferFull_ = true;
+				kernelSendBufferFullMtx_.unlock();
+			}
 		}
 	}
 }
@@ -286,13 +307,14 @@ int main(int argc, char* argv[])
 	}
 	INFO("############tcpClient started!################");
 
-	std::string msg("123456789");
-	int cnt = 100;
-	while (cnt--) {
+	std::string msg('a', 100);
+	// int cnt = 27100;
+	// while (cnt--) {
+	while (true) {
 		// INFO("input:");
 		// std::getline(std::cin, msg);
 		int ret = tcpClient->sendData(msg.data(), msg.size());
-		INFO("sendData ret %d errno %d", ret, errno);
+		INFO("sendData ret %d", ret);
 	}
 	while (true)
 		;
