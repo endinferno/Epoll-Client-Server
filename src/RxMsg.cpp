@@ -2,7 +2,7 @@
 
 RxBuffer::RxBuffer()
 {
-	rxMemRegion_ = std::make_unique<char>(BUFFER_SIZE);
+	rxMemRegion_ = std::make_unique<char[]>(BUFFER_SIZE);
 	for (int i = 0; i < FRAME_NUM; i++) {
 		struct RxMsg msg;
 		msg.fd = 0;
@@ -12,7 +12,7 @@ RxBuffer::RxBuffer()
 	}
 }
 
-struct RxMsg TxBuffer::getRxMsg()
+struct RxMsg RxBuffer::getRxMsg()
 {
 	std::unique_lock<std::mutex> lock(lockMtx);
 	rxMemRegionCond_.wait(lock, [this] { return !this->rxMemRegionList_.empty(); });
@@ -21,7 +21,7 @@ struct RxMsg TxBuffer::getRxMsg()
 	return msg;
 }
 
-void TxBuffer::putRxMsg(struct RxMsg& rxMsg)
+void RxBuffer::putRxMsg(struct RxMsg& rxMsg)
 {
 	std::lock_guard<std::mutex> lock(lockMtx);
 	rxMemRegionList_.push_back(rxMsg);
