@@ -1,4 +1,4 @@
-#include "TxBuffer.h"
+#include "EventChannel.h"
 #include "Logger.h"
 
 struct WorkerEvent EventChannel::pop()

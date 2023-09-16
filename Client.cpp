@@ -17,9 +17,8 @@
 #include <string>
 #include <thread>
 
+#include "EventChannel.h"
 #include "Logger.h"
-#include "TxBuffer.h"
-#include "TxMsg.h"
 
 using CallbackRecv = std::function<void(const void* data, size_t size)>;
 
