@@ -65,7 +65,7 @@ protected:
 	void onSocketAccept();
 	void onSocketRead(int32_t fd);
 	void onSocketWrite(int32_t fd);
-	void eventLoop();
+	void acceptReactorThreadFn();
 
 private:
 	constexpr static uint32_t EPOLL_WAIT_TIME = 10;
@@ -74,7 +74,7 @@ private:
 	uint16_t localPort_ = 0;
 	int32_t listenFd_ = -1;
 	int32_t epollFd_ = -1;
-	std::shared_ptr<std::thread> reactorThread_ = nullptr;
+	std::shared_ptr<std::thread> acceptReactorThread_ = nullptr;
 	bool isShutdown_ = false;
 	CallbackRecv recvCallback_ = nullptr;
 };
@@ -156,13 +156,13 @@ bool EpollTcpServer::start()
 		return false;
 	}
 
-	assert(!reactorThread_);
+	assert(!acceptReactorThread_);
 
-	reactorThread_ = std::make_shared<std::thread>(&EpollTcpServer::eventLoop, this);
-	if (!reactorThread_) {
+	acceptReactorThread_ = std::make_shared<std::thread>(&EpollTcpServer::acceptReactorThreadFn, this);
+	if (!acceptReactorThread_) {
 		return false;
 	}
-	reactorThread_->detach();
+	acceptReactorThread_->detach();
 
 	return true;
 }
@@ -283,7 +283,7 @@ int32_t EpollTcpServer::sendData(const PacketPtr& data)
 	return r;
 }
 
-void EpollTcpServer::eventLoop()
+void EpollTcpServer::acceptReactorThreadFn()
 {
 	struct epoll_event events[MAX_EPOLL_EVENT];
 	while (!isShutdown_) {
