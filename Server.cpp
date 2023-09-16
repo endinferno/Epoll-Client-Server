@@ -17,7 +17,6 @@
 #include <string>
 #include <thread>
 
-// packet of send/recv binary content
 typedef struct Packet {
 public:
 	Packet()
@@ -34,16 +33,14 @@ public:
 	{
 	}
 
-	int fd { -1 };	 // meaning socket
-	std::string msg; // real binary content
+	int fd { -1 };
+	std::string msg;
 } Packet;
 
 typedef std::shared_ptr<Packet> PacketPtr;
 
-// callback when packet received
 using CallbackRecv = std::function<void(const PacketPtr& data)>;
 
-// the implementation of Epoll Tcp Server
 class EpollTcpServer {
 public:
 	EpollTcpServer();
@@ -53,40 +50,31 @@ public:
 	EpollTcpServer& operator=(EpollTcpServer&& other) = delete;
 	~EpollTcpServer();
 
-	// the local ip and port of tcp server
 	EpollTcpServer(const std::string& local_ip, uint16_t local_port);
 
 public:
-	// start tcp server
 	bool Start();
-	// stop tcp server
 	bool Stop();
-	// send packet
 	int32_t SendData(const PacketPtr& data);
-	// register a callback when packet received
 	void RegisterOnRecvCallback(CallbackRecv callback);
 	void UnRegisterOnRecvCallback();
 
 protected:
-	// handle tcp accept event
 	void OnSocketAccept();
-	// handle tcp socket readable event(read())
 	void OnSocketRead(int32_t fd);
-	// handle tcp socket writeable event(write())
 	void OnSocketWrite(int32_t fd);
-	// one loop per thread, call epoll_wait and return ready socket(accept,readable,writeable,error...)
 	void EpollLoop();
 
 private:
 	constexpr static uint32_t EPOLL_WAIT_TIME = 10;
 	constexpr static uint32_t MAX_EPOLL_EVENT = 100;
-	std::string localIp_;								   // tcp local ip
-	uint16_t localPort_ = 0;							   // tcp bind local port
-	int32_t listenFd_ = -1;								   // listenfd
-	int32_t epollFd_ = -1;								   // epoll fd
-	std::shared_ptr<std::thread> reactorThread_ = nullptr; // one loop per thread(call epoll_wait in loop)
-	bool isShutdown_ = false;							   // if isShutdown_ is true, then exit the epoll loop
-	CallbackRecv recvCallback_ = nullptr;				   // callback when received
+	std::string localIp_;
+	uint16_t localPort_ = 0;
+	int32_t listenFd_ = -1;
+	int32_t epollFd_ = -1;
+	std::shared_ptr<std::thread> reactorThread_ = nullptr;
+	bool isShutdown_ = false;
+	CallbackRecv recvCallback_ = nullptr;
 };
 
 EpollTcpServer::EpollTcpServer(const std::string& localIp, uint16_t localPort)
@@ -168,21 +156,17 @@ bool EpollTcpServer::Start()
 
 	assert(!reactorThread_);
 
-	// the implementation of one loop per thread: create a thread to loop epoll
 	reactorThread_ = std::make_shared<std::thread>(&EpollTcpServer::EpollLoop, this);
 	if (!reactorThread_) {
 		return false;
 	}
-	// detach the thread(using isShutdown_ to control the start/stop of loop)
 	reactorThread_->detach();
 
 	return true;
 }
 
-// stop epoll tcp server and release epoll
 bool EpollTcpServer::Stop()
 {
-	// set isShutdown_ true to stop epoll loop
 	isShutdown_ = true;
 	::close(listenFd_);
 	::close(epollFd_);
@@ -191,19 +175,15 @@ bool EpollTcpServer::Stop()
 	return true;
 }
 
-// handle accept event
 void EpollTcpServer::OnSocketAccept()
 {
-	// epoll working on et mode, must read all coming data, so use a while loop here
 	while (true) {
 		struct sockaddr_in clientAddr;
 		socklen_t clientAddrLen = sizeof(clientAddr);
 
-		// accept a new connection and get a new socket
 		int clientFd = accept(listenFd_, (struct sockaddr*)&clientAddr, &clientAddrLen);
 		if (clientFd == -1) {
 			if ((errno == EAGAIN) || (errno == EWOULDBLOCK)) {
-				// read all accept finished(epoll et mode only trigger one time,so must read all data in listen socket)
 				std::cout << "accept all coming connections!" << std::endl;
 				break;
 			} else {
@@ -239,7 +219,6 @@ void EpollTcpServer::OnSocketAccept()
 	}
 }
 
-// register a callback when packet received
 void EpollTcpServer::RegisterOnRecvCallback(CallbackRecv callback)
 {
 	assert(!recvCallback_);
@@ -252,60 +231,48 @@ void EpollTcpServer::UnRegisterOnRecvCallback()
 	recvCallback_ = nullptr;
 }
 
-// handle read events on fd
 void EpollTcpServer::OnSocketRead(int32_t fd)
 {
 	char read_buf[4096];
 	bzero(read_buf, sizeof(read_buf));
 	int n = -1;
-	// epoll working on et mode, must read all data
 	while ((n = ::read(fd, read_buf, sizeof(read_buf))) > 0) {
-		// callback for recv
 		std::cout << "fd: " << fd << " recv: " << read_buf << std::endl;
 		std::string msg(read_buf, n);
-		// create a recv packet
 		PacketPtr data = std::make_shared<Packet>(fd, msg);
 		if (recvCallback_) {
-			// handle recv packet
 			recvCallback_(data);
 		}
 	}
 	if (n == -1) {
 		if (errno == EAGAIN || errno == EWOULDBLOCK) {
-			// read all data finished
 			return;
 		}
-		// something goes wrong for this fd, should close it
 		::close(fd);
 		return;
 	}
 	if (n == 0) {
-		// this may happen when client close socket. EPOLLRDHUP usually handle this, but just make sure; should close this fd
 		::close(fd);
 		return;
 	}
 }
 
-// handle write events on fd (usually happens when sending big files)
 void EpollTcpServer::OnSocketWrite(int32_t fd)
 {
 	// TODO(smaugx) not care for now
 	std::cout << "fd: " << fd << " writeable!" << std::endl;
 }
 
-// send packet
 int32_t EpollTcpServer::SendData(const PacketPtr& data)
 {
 	if (data->fd == -1) {
 		return -1;
 	}
-	// send packet on fd
 	int r = ::write(data->fd, data->msg.data(), data->msg.size());
 	if (r == -1) {
 		if (errno == EAGAIN || errno == EWOULDBLOCK) {
 			return -1;
 		}
-		// error happend
 		::close(data->fd);
 		std::cout << "fd: " << data->fd << " write error, close it!" << std::endl;
 		return -1;
@@ -314,55 +281,41 @@ int32_t EpollTcpServer::SendData(const PacketPtr& data)
 	return r;
 }
 
-// one loop per thread, call epoll_wait and handle all coming events
 void EpollTcpServer::EpollLoop()
 {
-	// request some memory, if events ready, socket events will copy to this memory from kernel
 	struct epoll_event* alive_events = static_cast<epoll_event*>(calloc(MAX_EPOLL_EVENT, sizeof(epoll_event)));
 	if (!alive_events) {
 		std::cout << "calloc memory failed for epoll_events!" << std::endl;
 		return;
 	}
-	// if isShutdown_ is true, will exit this loop
 	while (!isShutdown_) {
-		// call epoll_wait and return ready socket
 		int num = epoll_wait(epollFd_, alive_events, MAX_EPOLL_EVENT, EPOLL_WAIT_TIME);
 
 		for (int i = 0; i < num; ++i) {
-			// get fd
 			int fd = alive_events[i].data.fd;
-			// get events(readable/writeable/error)
 			int events = alive_events[i].events;
 
 			if ((events & EPOLLERR) || (events & EPOLLHUP)) {
 				std::cout << "epoll_wait error!" << std::endl;
-				// An error has occured on this fd, or the socket is not ready for reading (why were we notified then?).
 				::close(fd);
 			} else if (events & EPOLLRDHUP) {
-				// Stream socket peer closed connection, or shut down writing half of connection.
-				// more inportant, We still to handle disconnection when read()/recv() return 0 or -1 just to be sure.
 				std::cout << "fd:" << fd << " closed EPOLLRDHUP!" << std::endl;
-				// close fd and epoll will remove it
 				::close(fd);
 			} else if (events & EPOLLIN) {
 				std::cout << "epollin" << std::endl;
 				if (fd == listenFd_) {
-					// listen fd coming connections
 					OnSocketAccept();
 				} else {
-					// other fd read event coming, meaning data coming
 					OnSocketRead(fd);
 				}
 			} else if (events & EPOLLOUT) {
 				std::cout << "epollout" << std::endl;
-				// write event for fd (not including listen-fd), meaning send buffer is available for big files
 				OnSocketWrite(fd);
 			} else {
 				std::cout << "unknow epoll event!" << std::endl;
 			}
-		} // end for (int i = 0; ...
-
-	} // end while (isShutdown_)
+		}
+	}
 
 	free(alive_events);
 }
@@ -377,31 +330,25 @@ int main(int argc, char* argv[])
 	if (argc >= 3) {
 		localPort = std::atoi(argv[2]);
 	}
-	// create a epoll tcp server
 	auto epollServer = std::make_shared<EpollTcpServer>(localIp, localPort);
 	if (!epollServer) {
 		std::cout << "tcp_server create faield!" << std::endl;
 		exit(-1);
 	}
 
-	// recv callback in lambda mode, you can set your own callback here
 	auto recvCall = [&](const PacketPtr& data) -> void {
-		// just echo packet
 		epollServer->SendData(data);
 		return;
 	};
 
-	// register recv callback to epoll tcp server
 	epollServer->RegisterOnRecvCallback(recvCall);
 
-	// start the epoll tcp server
 	if (!epollServer->Start()) {
 		std::cout << "tcp_server start failed!" << std::endl;
 		exit(1);
 	}
 	std::cout << "############tcp_server started!################" << std::endl;
 
-	// block here
 	while (true) {
 		std::this_thread::sleep_for(std::chrono::seconds(1));
 	}
