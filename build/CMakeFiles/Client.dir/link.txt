@@ -1,1 +1,0 @@
-/usr/bin/c++ CMakeFiles/Client.dir/src/TxBuffer.cpp.o CMakeFiles/Client.dir/src/TxMsg.cpp.o CMakeFiles/Client.dir/Client.cpp.o -o Client  -lpthread 

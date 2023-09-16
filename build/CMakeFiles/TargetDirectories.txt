@@ -1,4 +1,0 @@
-/nvme/software/epoll-socket/build/CMakeFiles/rebuild_cache.dir
-/nvme/software/epoll-socket/build/CMakeFiles/edit_cache.dir
-/nvme/software/epoll-socket/build/CMakeFiles/Server.dir
-/nvme/software/epoll-socket/build/CMakeFiles/Client.dir
