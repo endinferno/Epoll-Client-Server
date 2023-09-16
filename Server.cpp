@@ -71,10 +71,6 @@ public:
 	void UnRegisterOnRecvCallback();
 
 protected:
-	// create epoll instance using epoll_create and return a fd of epoll
-	int32_t CreateEpoll();
-	// create a socket fd using api socket()
-	int32_t CreateSocket();
 	// set socket noblock
 	int32_t MakeSocketNonBlock(int32_t fd);
 	// listen()
@@ -94,7 +90,7 @@ protected:
 private:
 	std::string localIp_;								   // tcp local ip
 	uint16_t localPort_ = 0;							   // tcp bind local port
-	int32_t handle_ = -1;								   // listenfd
+	int32_t listenFd_ = -1;								   // listenfd
 	int32_t epollFd_ = -1;								   // epoll fd
 	std::shared_ptr<std::thread> reactorThread_ = nullptr; // one loop per thread(call epoll_wait in loop)
 	bool isShutdown_ = false;							   // if isShutdown_ is true, then exit the epoll loop
@@ -115,43 +111,63 @@ EpollTcpServer::~EpollTcpServer()
 bool EpollTcpServer::Start()
 {
 	// create epoll instance
-	if (CreateEpoll() < 0) {
+	// the basic epoll api of create a epoll instance
+	epollFd_ = epoll_create(1024);
+	if (epollFd_ < 0) {
+		// if something goes wrong, return -1
+		std::cout << "epoll_create failed!" << std::endl;
 		return false;
 	}
-	// create socket and bind
-	int listenfd = CreateSocket();
-	if (listenfd < 0) {
-		return false;
+
+	// create tcp socket
+	listenFd_ = ::socket(AF_INET, SOCK_STREAM, 0);
+	if (listenFd_ < 0) {
+		std::cout << "create socket " << localIp_ << ":" << localPort_ << " failed!" << std::endl;
+		return -1;
 	}
+
+	struct sockaddr_in serverAddr;
+	memset(&serverAddr, 0, sizeof(serverAddr));
+	serverAddr.sin_family = AF_INET;
+	serverAddr.sin_port = htons(localPort_);
+	serverAddr.sin_addr.s_addr = inet_addr(localIp_.c_str());
+
+	// bind to local ip and local port
+	int ret = ::bind(listenFd_, (struct sockaddr*)&serverAddr, sizeof(struct sockaddr));
+	if (ret != 0) {
+		std::cout << "bind socket " << localIp_ << ":" << localPort_ << " failed!" << std::endl;
+		::close(listenFd_);
+		return -1;
+	}
+	std::cout << "create and bind socket " << localIp_ << ":" << localPort_ << " success!" << std::endl;
+
 	int reuse = 1;
-	int ret = setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, (const void*)&reuse, sizeof(reuse));
+	ret = setsockopt(listenFd_, SOL_SOCKET, SO_REUSEADDR, (const void*)&reuse, sizeof(reuse));
 	if (ret < 0) {
 		return false;
 	}
-	ret = setsockopt(listenfd, SOL_SOCKET, SO_REUSEPORT, (const void*)&reuse, sizeof(reuse));
+	ret = setsockopt(listenFd_, SOL_SOCKET, SO_REUSEPORT, (const void*)&reuse, sizeof(reuse));
 	if (ret < 0) {
 		return false;
 	}
 	// set listen socket noblock
-	int mr
-		= MakeSocketNonBlock(listenfd);
-	if (mr < 0) {
+	ret = MakeSocketNonBlock(listenFd_);
+	if (ret < 0) {
 		return false;
 	}
 
 	// call listen()
-	int lr = Listen(listenfd);
-	if (lr < 0) {
+	ret = Listen(listenFd_);
+	if (ret < 0) {
 		return false;
 	}
 	std::cout << "EpollTcpServer Init success!" << std::endl;
-	handle_ = listenfd;
 
 	// add listen socket to epoll instance, and focus on event EPOLLIN and EPOLLOUT, actually EPOLLIN is enough
-	int er = UpdateEpollEvents(epollFd_, EPOLL_CTL_ADD, handle_, EPOLLIN | EPOLLET);
+	int er = UpdateEpollEvents(epollFd_, EPOLL_CTL_ADD, listenFd_, EPOLLIN | EPOLLET);
 	if (er < 0) {
 		// if something goes wrong, close listen socket and return false
-		::close(handle_);
+		::close(listenFd_);
 		return false;
 	}
 
@@ -173,50 +189,11 @@ bool EpollTcpServer::Stop()
 {
 	// set isShutdown_ true to stop epoll loop
 	isShutdown_ = true;
-	::close(handle_);
+	::close(listenFd_);
 	::close(epollFd_);
 	std::cout << "stop epoll!" << std::endl;
 	UnRegisterOnRecvCallback();
 	return true;
-}
-
-int32_t EpollTcpServer::CreateEpoll()
-{
-	// the basic epoll api of create a epoll instance
-	int epollfd = epoll_create(1);
-	if (epollfd < 0) {
-		// if something goes wrong, return -1
-		std::cout << "epoll_create failed!" << std::endl;
-		return -1;
-	}
-	epollFd_ = epollfd;
-	return epollfd;
-}
-
-int32_t EpollTcpServer::CreateSocket()
-{
-	// create tcp socket
-	int listenfd = ::socket(AF_INET, SOCK_STREAM, 0);
-	if (listenfd < 0) {
-		std::cout << "create socket " << localIp_ << ":" << localPort_ << " failed!" << std::endl;
-		return -1;
-	}
-
-	struct sockaddr_in addr;
-	memset(&addr, 0, sizeof(addr));
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(localPort_);
-	addr.sin_addr.s_addr = inet_addr(localIp_.c_str());
-
-	// bind to local ip and local port
-	int r = ::bind(listenfd, (struct sockaddr*)&addr, sizeof(struct sockaddr));
-	if (r != 0) {
-		std::cout << "bind socket " << localIp_ << ":" << localPort_ << " failed!" << std::endl;
-		::close(listenfd);
-		return -1;
-	}
-	std::cout << "create and bind socket " << localIp_ << ":" << localPort_ << " success!" << std::endl;
-	return listenfd;
 }
 
 // set noblock fd
@@ -271,7 +248,7 @@ void EpollTcpServer::OnSocketAccept()
 		socklen_t in_len = sizeof(in_addr);
 
 		// accept a new connection and get a new socket
-		int cli_fd = accept(handle_, (struct sockaddr*)&in_addr, &in_len);
+		int cli_fd = accept(listenFd_, (struct sockaddr*)&in_addr, &in_len);
 		if (cli_fd == -1) {
 			if ((errno == EAGAIN) || (errno == EWOULDBLOCK)) {
 				// read all accept finished(epoll et mode only trigger one time,so must read all data in listen socket)
@@ -415,7 +392,7 @@ void EpollTcpServer::EpollLoop()
 				::close(fd);
 			} else if (events & EPOLLIN) {
 				std::cout << "epollin" << std::endl;
-				if (fd == handle_) {
+				if (fd == listenFd_) {
 					// listen fd coming connections
 					OnSocketAccept();
 				} else {
