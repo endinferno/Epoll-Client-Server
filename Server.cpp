@@ -74,7 +74,7 @@ private:
 	uint16_t localPort_ = 0;
 	int32_t listenFd_ = -1;
 	int32_t epollFd_ = -1;
-	std::shared_ptr<std::thread> acceptReactorThread_ = nullptr;
+	std::unique_ptr<std::thread> acceptReactorThread_ = nullptr;
 	bool isShutdown_ = false;
 	CallbackRecv recvCallback_ = nullptr;
 };
@@ -158,7 +158,7 @@ bool EpollTcpServer::start()
 
 	assert(!acceptReactorThread_);
 
-	acceptReactorThread_ = std::make_shared<std::thread>(&EpollTcpServer::acceptReactorThreadFn, this);
+	acceptReactorThread_ = std::make_unique<std::thread>(&EpollTcpServer::acceptReactorThreadFn, this);
 	if (!acceptReactorThread_) {
 		return false;
 	}
