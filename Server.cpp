@@ -52,7 +52,7 @@ public:
 	EpollTcpServer& operator=(EpollTcpServer&& other) = delete;
 	~EpollTcpServer();
 
-	EpollTcpServer(const std::string& local_ip, uint16_t local_port);
+	EpollTcpServer(const std::string& localIp, uint16_t localPort);
 
 public:
 	bool start();
@@ -235,12 +235,12 @@ void EpollTcpServer::unRegisterOnRecvCallback()
 
 void EpollTcpServer::onSocketRead(int32_t fd)
 {
-	char read_buf[4096];
-	bzero(read_buf, sizeof(read_buf));
+	char readBuf[4096];
+	bzero(readBuf, sizeof(readBuf));
 	int n = -1;
-	while ((n = ::read(fd, read_buf, sizeof(read_buf))) > 0) {
-		INFO("fd: %d recv: %s", fd, read_buf);
-		std::string msg(read_buf, n);
+	while ((n = ::read(fd, readBuf, sizeof(readBuf))) > 0) {
+		INFO("fd: %d recv: %s", fd, readBuf);
+		std::string msg(readBuf, n);
 		PacketPtr data = std::make_shared<Packet>(fd, msg);
 		if (recvCallback_) {
 			recvCallback_(data);
@@ -285,32 +285,28 @@ int32_t EpollTcpServer::sendData(const PacketPtr& data)
 
 void EpollTcpServer::epollLoop()
 {
-	struct epoll_event* alive_events = static_cast<epoll_event*>(calloc(MAX_EPOLL_EVENT, sizeof(epoll_event)));
-	if (!alive_events) {
-		ERROR("calloc memory failed for epoll_events!");
-		return;
-	}
+	struct epoll_event events[MAX_EPOLL_EVENT];
 	while (!isShutdown_) {
-		int num = epoll_wait(epollFd_, alive_events, MAX_EPOLL_EVENT, EPOLL_WAIT_TIME);
+		int eventNum = epoll_wait(epollFd_, events, MAX_EPOLL_EVENT, EPOLL_WAIT_TIME);
 
-		for (int i = 0; i < num; ++i) {
-			int fd = alive_events[i].data.fd;
-			int events = alive_events[i].events;
+		for (int i = 0; i < eventNum; ++i) {
+			int fd = events[i].data.fd;
+			int event = events[i].events;
 
-			if ((events & EPOLLERR) || (events & EPOLLHUP)) {
+			if ((event & EPOLLERR) || (event & EPOLLHUP)) {
 				ERROR("epoll_wait error!");
 				::close(fd);
-			} else if (events & EPOLLRDHUP) {
+			} else if (event & EPOLLRDHUP) {
 				ERROR("fd: %d closed EPOLLRDHUP!", fd);
 				::close(fd);
-			} else if (events & EPOLLIN) {
+			} else if (event & EPOLLIN) {
 				INFO("epollin");
 				if (fd == listenFd_) {
 					onSocketAccept();
 				} else {
 					onSocketRead(fd);
 				}
-			} else if (events & EPOLLOUT) {
+			} else if (event & EPOLLOUT) {
 				INFO("epollout");
 				onSocketWrite(fd);
 			} else {
@@ -318,8 +314,6 @@ void EpollTcpServer::epollLoop()
 			}
 		}
 	}
-
-	free(alive_events);
 }
 
 int main(int argc, char* argv[])
