@@ -369,33 +369,33 @@ void EpollTcpServer::EpollLoop()
 
 int main(int argc, char* argv[])
 {
-	std::string local_ip { "127.0.0.1" };
-	uint16_t local_port { 6666 };
+	std::string localIp { "127.0.0.1" };
+	uint16_t localPort { 6666 };
 	if (argc >= 2) {
-		local_ip = std::string(argv[1]);
+		localIp = std::string(argv[1]);
 	}
 	if (argc >= 3) {
-		local_port = std::atoi(argv[2]);
+		localPort = std::atoi(argv[2]);
 	}
 	// create a epoll tcp server
-	auto epoll_server = std::make_shared<EpollTcpServer>(local_ip, local_port);
-	if (!epoll_server) {
+	auto epollServer = std::make_shared<EpollTcpServer>(localIp, localPort);
+	if (!epollServer) {
 		std::cout << "tcp_server create faield!" << std::endl;
 		exit(-1);
 	}
 
 	// recv callback in lambda mode, you can set your own callback here
-	auto recv_call = [&](const PacketPtr& data) -> void {
+	auto recvCall = [&](const PacketPtr& data) -> void {
 		// just echo packet
-		epoll_server->SendData(data);
+		epollServer->SendData(data);
 		return;
 	};
 
 	// register recv callback to epoll tcp server
-	epoll_server->RegisterOnRecvCallback(recv_call);
+	epollServer->RegisterOnRecvCallback(recvCall);
 
 	// start the epoll tcp server
-	if (!epoll_server->Start()) {
+	if (!epollServer->Start()) {
 		std::cout << "tcp_server start failed!" << std::endl;
 		exit(1);
 	}
@@ -406,7 +406,7 @@ int main(int argc, char* argv[])
 		std::this_thread::sleep_for(std::chrono::seconds(1));
 	}
 
-	epoll_server->Stop();
+	epollServer->Stop();
 
 	return 0;
 }
