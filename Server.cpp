@@ -65,7 +65,7 @@ protected:
 	void onSocketAccept();
 	void onSocketRead(int32_t fd);
 	void onSocketWrite(int32_t fd);
-	void epollLoop();
+	void eventLoop();
 
 private:
 	constexpr static uint32_t EPOLL_WAIT_TIME = 10;
@@ -158,7 +158,7 @@ bool EpollTcpServer::start()
 
 	assert(!reactorThread_);
 
-	reactorThread_ = std::make_shared<std::thread>(&EpollTcpServer::epollLoop, this);
+	reactorThread_ = std::make_shared<std::thread>(&EpollTcpServer::eventLoop, this);
 	if (!reactorThread_) {
 		return false;
 	}
@@ -283,7 +283,7 @@ int32_t EpollTcpServer::sendData(const PacketPtr& data)
 	return r;
 }
 
-void EpollTcpServer::epollLoop()
+void EpollTcpServer::eventLoop()
 {
 	struct epoll_event events[MAX_EPOLL_EVENT];
 	while (!isShutdown_) {
