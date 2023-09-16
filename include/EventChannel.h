@@ -26,6 +26,7 @@ public:
 	EventChannel() = default;
 	struct WorkerEvent pop();
 	void push(struct WorkerEvent& workerEvent);
+	void remove(int clientFd, TxBuffer& txBuffer);
 
 private:
 	std::queue<WorkerEvent> eventChannel_;

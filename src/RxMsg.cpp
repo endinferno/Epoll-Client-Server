@@ -18,6 +18,7 @@ struct RxMsg RxBuffer::getRxMsg()
 	rxMemRegionCond_.wait(lock, [this] { return !this->rxMemRegionList_.empty(); });
 	struct RxMsg msg = rxMemRegionList_.front();
 	rxMemRegionList_.pop_front();
+	msg.len = FRAME_SIZE;
 	return msg;
 }
 

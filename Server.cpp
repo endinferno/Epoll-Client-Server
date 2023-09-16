@@ -14,34 +14,16 @@
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <shared_mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 
+#include "EventChannel.h"
 #include "Logger.h"
+#include "TxMsg.h"
 
-typedef struct Packet {
-public:
-	Packet()
-		: msg { "" }
-	{
-	}
-	Packet(const std::string& msg)
-		: msg { msg }
-	{
-	}
-	Packet(int fd, const std::string& msg)
-		: fd(fd)
-		, msg(msg)
-	{
-	}
-
-	int fd { -1 };
-	std::string msg;
-} Packet;
-
-typedef std::shared_ptr<Packet> PacketPtr;
-
-using CallbackRecv = std::function<void(const PacketPtr& data)>;
+using CallbackRecv = std::function<void(const struct RxMsg& rxMsg)>;
 
 class EpollTcpServer {
 public:
@@ -57,22 +39,25 @@ public:
 public:
 	bool start();
 	bool stop();
-	int32_t sendData(const PacketPtr& data);
+	int32_t sendData(int fd, const void* data, size_t size);
 	void registerOnRecvCallback(CallbackRecv callback);
 	void unRegisterOnRecvCallback();
 
 protected:
 	void onAcceptEvent();
-	void onSocketRead(int32_t fd);
-	void onSocketWrite(int32_t fd);
+	void onReadEvent(struct RxMsg& rxMsg);
+	int onWriteEvent(struct TxMsg& txMsg);
 	void acceptReactorThreadFn();
 	void clientReactorThreadFn(int handleClient);
-	void clientWorkerThreadFn();
+	void clientWorkerThreadFn(int handleClient);
+	bool isSendBufferFull(int clientFd);
+	void disconnectClient(int clientFd);
 
 private:
 	constexpr static uint32_t EPOLL_WAIT_TIME = 10;
 	constexpr static uint32_t MAX_EPOLL_EVENT = 100;
 	constexpr static int MAX_EPOLL_ADD_FD_NUM = 1024;
+	constexpr static int BUFFER_SIZE = 2048;
 	std::string localIp_;
 	uint16_t localPort_ = 0;
 	int32_t listenFd_ = -1;
@@ -86,6 +71,11 @@ private:
 	std::vector<std::unique_ptr<std::thread>> clientReactorThread_;
 	std::vector<std::unique_ptr<std::thread>> clientWorkerThread_;
 	std::vector<int32_t> clientEpollFd_;
+	std::vector<std::unique_ptr<char[]>> rxBuffer_;
+	TxBuffer txBuffer_;
+	std::vector<std::shared_ptr<EventChannel>> eventChannel_;
+	std::unordered_map<int, bool> isKernelSendBufferFullMap_;
+	std::shared_mutex isKernelSendBufferFullMapMtx_;
 };
 
 EpollTcpServer::EpollTcpServer(const std::string& localIp, uint16_t localPort)
@@ -96,12 +86,20 @@ EpollTcpServer::EpollTcpServer(const std::string& localIp, uint16_t localPort)
 		int32_t epollFd = epoll_create(MAX_EPOLL_ADD_FD_NUM);
 		clientEpollFd_.emplace_back(epollFd);
 	}
+	for (int i = 0; i < clientWorkerThreadNum; i++) {
+		auto rxBuffer = std::make_unique<char[]>(BUFFER_SIZE);
+		rxBuffer_.emplace_back(std::move(rxBuffer));
+	}
+	for (int i = 0; i < clientWorkerThreadNum; i++) {
+		auto eventChannel = std::make_shared<EventChannel>();
+		eventChannel_.emplace_back(std::move(eventChannel));
+	}
 	for (int i = 0; i < clientReactorThreadNum; i++) {
 		auto clientReactorThread = std::make_unique<std::thread>(&EpollTcpServer::clientReactorThreadFn, this, i);
 		clientReactorThread_.emplace_back(std::move(clientReactorThread));
 	}
 	for (int i = 0; i < clientWorkerThreadNum; i++) {
-		auto clientWorkerThread = std::make_unique<std::thread>(&EpollTcpServer::clientWorkerThreadFn, this);
+		auto clientWorkerThread = std::make_unique<std::thread>(&EpollTcpServer::clientWorkerThreadFn, this, i);
 		clientWorkerThread_.emplace_back(std::move(clientWorkerThread));
 	}
 	for (int i = 0; i < clientReactorThreadNum; i++) {
@@ -176,7 +174,7 @@ bool EpollTcpServer::start()
 	struct epoll_event evt;
 	evt.events = EPOLLIN | EPOLLET;
 	evt.data.fd = listenFd_;
-	DEBUG("%s fd %d events read %d write %d", "add", listenFd_, !!(evt.events & EPOLLIN), !!(evt.events & EPOLLOUT));
+	DEBUG("%s listen fd %d events read %d write %d", "add", listenFd_, !!(evt.events & EPOLLIN), !!(evt.events & EPOLLOUT));
 	ret = epoll_ctl(acceptEpollFd_, EPOLL_CTL_ADD, listenFd_, &evt);
 	if (ret < 0) {
 		ERROR("epoll_ctl failed!");
@@ -242,13 +240,16 @@ void EpollTcpServer::onAcceptEvent()
 		struct epoll_event evt;
 		evt.events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET;
 		evt.data.fd = clientFd;
-		DEBUG("%s fd %d events read %d write %d", "add", clientFd, !!(evt.events & EPOLLIN), !!(evt.events & EPOLLOUT));
+		DEBUG("%s client fd %d events read %d write %d", "add", clientFd, !!(evt.events & EPOLLIN), !!(evt.events & EPOLLOUT));
 		ret = epoll_ctl(clientEpollFd, EPOLL_CTL_ADD, clientFd, &evt);
 		if (ret < 0) {
 			ERROR("epoll_ctl failed!");
 			::close(clientFd);
 			continue;
 		}
+		isKernelSendBufferFullMapMtx_.lock();
+		isKernelSendBufferFullMap_.insert({ clientFd, false });
+		isKernelSendBufferFullMapMtx_.unlock();
 	}
 }
 
@@ -264,54 +265,58 @@ void EpollTcpServer::unRegisterOnRecvCallback()
 	recvCallback_ = nullptr;
 }
 
-void EpollTcpServer::onSocketRead(int32_t fd)
+void EpollTcpServer::onReadEvent(struct RxMsg& rxMsg)
 {
-	char readBuf[4096];
-	bzero(readBuf, sizeof(readBuf));
-	int n = -1;
-	while ((n = ::read(fd, readBuf, sizeof(readBuf))) > 0) {
-		INFO("fd: %d recv: %s", fd, readBuf);
-		std::string msg(readBuf, n);
-		PacketPtr data = std::make_shared<Packet>(fd, msg);
+	int fd = rxMsg.fd;
+	void* payload = (void*)rxMsg.payload;
+	size_t size = rxMsg.len - 1;
+	int readBytes = -1;
+	while ((readBytes = ::read(fd, payload, size)) > 0) {
+		INFO("fd: %d recv: %s", fd, (char*)payload);
+		rxMsg.len = readBytes;
 		if (recvCallback_) {
-			recvCallback_(data);
+			recvCallback_(rxMsg);
 		}
 	}
-	if (n == -1) {
-		if (errno == EAGAIN || errno == EWOULDBLOCK) {
-			return;
-		}
-		::close(fd);
-		return;
-	}
-	if (n == 0) {
-		::close(fd);
-		return;
-	}
+	DEBUG("fd: %d readBytes: %d errno: %d", fd, readBytes, errno);
 }
 
-void EpollTcpServer::onSocketWrite(int32_t fd)
+int EpollTcpServer::onWriteEvent(struct TxMsg& txMsg)
 {
-	// TODO(smaugx) not care for now
+	int fd = txMsg.fd;
+	size_t size = txMsg.len;
+	const void* data = txMsg.payload;
 	INFO("fd: %d writeable!", fd);
+	int writeBytes = ::write(fd, data, size);
+	if (writeBytes == (int)size) {
+		txBuffer_.putTxMsg(txMsg);
+		return 0;
+	} else if (writeBytes == -1) {
+		return errno;
+	}
+	// Send part of data successfully, change the TxMsg to unsend part
+	memmove(txMsg.payload, txMsg.payload + writeBytes, size - writeBytes);
+	txMsg.len -= writeBytes;
+	DEBUG("fd: %d errno: %d write size: %d ok!", fd, errno, writeBytes);
+	return EAGAIN;
 }
 
-int32_t EpollTcpServer::sendData(const PacketPtr& data)
+int32_t EpollTcpServer::sendData(int fd, const void* data, size_t size)
 {
-	if (data->fd == -1) {
+	auto txMsgOption = txBuffer_.getTxMsg();
+	if (!txMsgOption.has_value()) {
 		return -1;
 	}
-	int r = ::write(data->fd, data->msg.data(), data->msg.size());
-	if (r == -1) {
-		if (errno == EAGAIN || errno == EWOULDBLOCK) {
-			return -1;
-		}
-		::close(data->fd);
-		ERROR("fd: %d write error, close it!", data->fd);
-		return -1;
-	}
-	INFO("fd: %d write size: %d ok!", data->fd, r);
-	return r;
+	auto txMsg = txMsgOption.value();
+	txMsg.fd = fd;
+	txMsg.len = size;
+	memcpy(txMsg.payload, data, size);
+	struct WorkerEvent workerEvent;
+	workerEvent.type = WRITE;
+	workerEvent.msg.txMsg = txMsg;
+	auto eventChannel = eventChannel_[fd % clientWorkerThreadNum];
+	eventChannel->push(workerEvent);
+	return 0;
 }
 
 void EpollTcpServer::acceptReactorThreadFn()
@@ -331,6 +336,7 @@ void EpollTcpServer::acceptReactorThreadFn()
 				}
 			} else {
 				ERROR("fd %d Event %d should not handle in accept reactor", fd, event);
+				exit(-1);
 			}
 		}
 	}
@@ -348,17 +354,29 @@ void EpollTcpServer::clientReactorThreadFn(int handleClient)
 			int event = events[i].events;
 
 			if ((event & EPOLLERR) || (event & EPOLLHUP)) {
-				ERROR("epoll_wait error!");
-				::close(fd);
+				// ERROR("epoll_wait error EPOLLERR!");
+				DEBUG("epoll_wait error EPOLLERR!");
+				disconnectClient(fd);
 			} else if (event & EPOLLRDHUP) {
-				ERROR("fd: %d closed EPOLLRDHUP!", fd);
-				::close(fd);
+				DEBUG("fd: %d closed EPOLLRDHUP!", fd);
+				disconnectClient(fd);
 			} else if (event & EPOLLIN) {
-				DEBUG("epollin");
-				onSocketRead(fd);
+				DEBUG("epollin fd %d", fd);
+				int workerIdx = fd % clientWorkerThreadNum;
+				struct RxMsg rxMsg;
+				rxMsg.fd = fd;
+				rxMsg.payload = rxBuffer_[workerIdx].get();
+				rxMsg.len = BUFFER_SIZE;
+				struct WorkerEvent workerEvent;
+				workerEvent.type = READ;
+				workerEvent.msg.rxMsg = rxMsg;
+				auto eventChannel = eventChannel_[workerIdx];
+				eventChannel->push(workerEvent);
 			} else if (event & EPOLLOUT) {
-				DEBUG("epollout");
-				onSocketWrite(fd);
+				DEBUG("epollout fd %d", fd);
+				isKernelSendBufferFullMapMtx_.lock();
+				isKernelSendBufferFullMap_[fd] = false;
+				isKernelSendBufferFullMapMtx_.unlock();
 			} else {
 				ERROR("fd %d unknow epoll event %d!", fd, event);
 			}
@@ -366,10 +384,61 @@ void EpollTcpServer::clientReactorThreadFn(int handleClient)
 	}
 }
 
-void EpollTcpServer::clientWorkerThreadFn()
+void EpollTcpServer::disconnectClient(int clientFd)
 {
+	::close(clientFd);
+	auto eventChannel = eventChannel_[clientFd % clientWorkerThreadNum];
+	eventChannel->remove(clientFd, txBuffer_);
+	isKernelSendBufferFullMapMtx_.lock();
+	isKernelSendBufferFullMap_.erase(clientFd);
+	isKernelSendBufferFullMapMtx_.unlock();
+}
+
+bool EpollTcpServer::isSendBufferFull(int clientFd)
+{
+	bool sendBufferFull = false;
+	isKernelSendBufferFullMapMtx_.lock_shared();
+	auto iter = isKernelSendBufferFullMap_.find(clientFd);
+	if (iter != isKernelSendBufferFullMap_.end()) {
+		sendBufferFull = iter->second;
+	}
+	isKernelSendBufferFullMapMtx_.unlock_shared();
+	return sendBufferFull;
+}
+
+void EpollTcpServer::clientWorkerThreadFn(int handleClient)
+{
+	auto eventChannel = eventChannel_[handleClient];
 	while (true) {
-		;
+		auto workerEvent = eventChannel->pop();
+		if (workerEvent.type == READ) {
+			onReadEvent(workerEvent.msg.rxMsg);
+		} else if (workerEvent.type == WRITE) {
+			// Send buffer is full, push the event back
+			// Will send when send buffer available
+			int fd = workerEvent.msg.txMsg.fd;
+			if (isSendBufferFull(fd)) {
+				eventChannel->push(workerEvent);
+				continue;
+			}
+			int ret = onWriteEvent(workerEvent.msg.txMsg);
+			if (ret == 0) {
+				// Means write successfully
+				continue;
+			} else if (ret == EAGAIN || ret == EWOULDBLOCK) {
+				// Means kernel send buffer is full
+				// Push the event back
+				// Will send when send buffer available
+				eventChannel->push(workerEvent);
+				isKernelSendBufferFullMapMtx_.lock();
+				isKernelSendBufferFullMap_[fd] = true;
+				isKernelSendBufferFullMapMtx_.unlock();
+			}
+			// If not the above 2 situations
+			// Means the client disconnect
+			// Will clean all the event belonging to the client
+			// Dont need to push the event back
+		}
 	}
 }
 
@@ -389,8 +458,11 @@ int main(int argc, char* argv[])
 		exit(-1);
 	}
 
-	auto recvCall = [&](const PacketPtr& data) -> void {
-		epollServer->sendData(data);
+	auto recvCall = [&](const struct RxMsg& rxMsg) -> void {
+		int fd = rxMsg.fd;
+		const void* data = (const void*)rxMsg.payload;
+		size_t size = rxMsg.len;
+		epollServer->sendData(fd, data, size);
 		return;
 	};
 
