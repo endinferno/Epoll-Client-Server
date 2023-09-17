@@ -1,16 +1,15 @@
 #include <arpa/inet.h>
-#include <asm-generic/socket.h>
-#include <cassert>
-#include <cstring>
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <cassert>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -22,6 +21,7 @@
 #include "EventChannel.h"
 #include "Logger.h"
 #include "TxMsg.h"
+#include "Utils.h"
 
 using CallbackRecv = std::function<void(const struct RxMsg& rxMsg)>;
 
@@ -56,8 +56,6 @@ protected:
 	void disconnectClient(int clientFd);
 	void submitReadEvent(int clientFd);
 	void submitWriteEvent(int clientFd, const void* data, size_t size, struct TxMsg& txMsg);
-	bool setClientFdNonBlock(int clientFd);
-	bool setEpollCtl(int epollFd, int operation, int clientFd, uint32_t event);
 
 private:
 	constexpr static uint32_t EPOLL_WAIT_TIME = 10;
@@ -469,38 +467,6 @@ void EpollTcpServer::clientWriteWorkerThreadFn(int handleClient)
 			exit(1);
 		}
 	}
-}
-
-bool EpollTcpServer::setClientFdNonBlock(int clientFd)
-{
-	int flags = fcntl(listenFd_, F_GETFL, 0);
-	if (flags < 0) {
-		ERROR("fcntl failed!");
-		return false;
-	}
-	int ret = fcntl(listenFd_, F_SETFL, flags | O_NONBLOCK);
-	if (ret < 0) {
-		ERROR("fcntl failed!");
-		return false;
-	}
-	return true;
-}
-
-bool EpollTcpServer::setEpollCtl(int epollFd, int operation, int clientFd, uint32_t event)
-{
-	struct epoll_event evt;
-	evt.events = EPOLLIN | EPOLLET;
-	evt.data.fd = clientFd;
-
-	DEBUG("%s listen fd %d events read %d write %d",
-		(operation == EPOLL_CTL_ADD) ? "add" : ((operation == EPOLL_CTL_MOD) ? "mod" : ((operation == EPOLL_CTL_DEL) ? "del" : "")),
-		clientFd, !!(event & EPOLLIN), !!(event & EPOLLOUT));
-	int ret = epoll_ctl(epollFd, operation, clientFd, &evt);
-	if (ret < 0) {
-		ERROR("epoll_ctl failed!");
-		return false;
-	}
-	return true;
 }
 
 int main(int argc, char* argv[])

@@ -19,6 +19,7 @@
 
 #include "EventChannel.h"
 #include "Logger.h"
+#include "Utils.h"
 
 using CallbackRecv = std::function<void(const void* data, size_t size)>;
 
@@ -105,26 +106,14 @@ bool EpollTcpClient::start()
 		return false;
 	}
 
-	int flags = fcntl(connFd_, F_GETFL, 0);
-	if (flags < 0) {
-		ERROR("fcntl failed!");
-		return false;
-	}
-	ret = fcntl(connFd_, F_SETFL, flags | O_NONBLOCK);
-	if (ret < 0) {
-		ERROR("fcntl failed!");
+	if (!setClientFdNonBlock(connFd_)) {
 		return false;
 	}
 
 	INFO("EpollTcpClient Init success!");
 
-	struct epoll_event evt;
-	memset(&evt, 0, sizeof(evt));
-	evt.events = EPOLLIN | EPOLLOUT | EPOLLET;
-	evt.data.fd = connFd_;
-	INFO("%s fd %d events read %d write %d\n", "add", connFd_, evt.events & EPOLLIN, evt.events & EPOLLOUT);
-	ret = epoll_ctl(epollFd_, EPOLL_CTL_ADD, connFd_, &evt);
-	if (ret < 0) {
+	uint32_t event = EPOLLIN | EPOLLOUT | EPOLLET;
+	if (!setEpollCtl(epollFd_, EPOLL_CTL_ADD, connFd_, event)) {
 		ERROR("epoll_ctl failed!");
 		::close(connFd_);
 		return false;

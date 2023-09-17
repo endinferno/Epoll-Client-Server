@@ -10,11 +10,13 @@ add_definitions("-Wall -g")
 include_directories(include)
 
 add_executable(Client
+	src/Utils.cpp
 	src/EventChannel.cpp
 	src/TxMsg.cpp
 	Client.cpp)
 
 add_executable(Server
+	src/Utils.cpp
 	src/EventChannel.cpp
 	src/TxMsg.cpp
 	Server.cpp)
