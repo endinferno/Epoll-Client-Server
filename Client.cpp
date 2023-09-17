@@ -106,7 +106,7 @@ bool EpollTcpClient::start()
 		return false;
 	}
 
-	if (!setClientFdNonBlock(connFd_)) {
+	if (!setSocketNonBlock(connFd_)) {
 		return false;
 	}
 

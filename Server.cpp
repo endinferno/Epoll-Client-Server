@@ -162,13 +162,13 @@ bool EpollTcpServer::start()
 	}
 	INFO("create and bind socket %s:%u success!", localIp_.c_str(), localPort_);
 
-	if (!setClientFdReUse(listenFd_)) {
+	if (!setSocketReUse(listenFd_)) {
 		ERROR("set socket reuse %s:%u failed!", localIp_.c_str(), localPort_);
 		::close(listenFd_);
 		return false;
 	}
 
-	if (!setClientFdNonBlock(listenFd_)) {
+	if (!setSocketNonBlock(listenFd_)) {
 		::close(listenFd_);
 		return false;
 	}
@@ -230,7 +230,7 @@ void EpollTcpServer::onAcceptEvent()
 		}
 		INFO("accpet connection from %s:%d", inet_ntoa(clientAddr.sin_addr), ntohs(clientAddr.sin_port));
 
-		if (!setClientFdNonBlock(clientFd)) {
+		if (!setSocketNonBlock(clientFd)) {
 			::close(clientFd);
 			continue;
 		}
@@ -366,7 +366,6 @@ void EpollTcpServer::clientReactorThreadFn(int handleClient)
 			int event = events[i].events;
 
 			if ((event & EPOLLERR) || (event & EPOLLHUP)) {
-				// ERROR("epoll_wait error EPOLLERR!");
 				DEBUG("fd: %d epoll_wait error EPOLLERR!", fd);
 				disconnectClient(fd);
 			} else if (event & EPOLLRDHUP) {
@@ -387,6 +386,8 @@ void EpollTcpServer::clientReactorThreadFn(int handleClient)
 
 void EpollTcpServer::disconnectClient(int clientFd)
 {
+	int32_t clientEpollFd = clientEpollFd_[clientFd % clientReactorThreadNum];
+	setEpollCtl(clientEpollFd, EPOLL_CTL_DEL, clientFd, 0);
 	::close(clientFd);
 	auto readEventChannel = readEventChannel_[clientFd % clientReadWorkerThreadNum];
 	readEventChannel->remove(clientFd, txBuffer_);

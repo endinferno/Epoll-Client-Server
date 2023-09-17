@@ -1,15 +1,15 @@
 #include "Utils.h"
 
-bool setEpollCtl(int epollFd, int operation, int clientFd, uint32_t event)
+bool setEpollCtl(int epollFd, int operation, int fd, uint32_t event)
 {
 	struct epoll_event evt;
 	evt.events = event;
-	evt.data.fd = clientFd;
+	evt.data.fd = fd;
 
 	DEBUG("%s listen fd %d events read %d write %d",
 		(operation == EPOLL_CTL_ADD) ? "add" : ((operation == EPOLL_CTL_MOD) ? "mod" : ((operation == EPOLL_CTL_DEL) ? "del" : "")),
-		clientFd, !!(event & EPOLLIN), !!(event & EPOLLOUT));
-	int ret = epoll_ctl(epollFd, operation, clientFd, &evt);
+		fd, !!(event & EPOLLIN), !!(event & EPOLLOUT));
+	int ret = epoll_ctl(epollFd, operation, fd, &evt);
 	if (ret < 0) {
 		ERROR("epoll_ctl failed!");
 		return false;
@@ -17,14 +17,14 @@ bool setEpollCtl(int epollFd, int operation, int clientFd, uint32_t event)
 	return true;
 }
 
-bool setClientFdNonBlock(int clientFd)
+bool setSocketNonBlock(int fd)
 {
-	int flags = fcntl(clientFd, F_GETFL, 0);
+	int flags = fcntl(fd, F_GETFL, 0);
 	if (flags < 0) {
 		ERROR("fcntl failed!");
 		return false;
 	}
-	int ret = fcntl(clientFd, F_SETFL, flags | O_NONBLOCK);
+	int ret = fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 	if (ret < 0) {
 		ERROR("fcntl failed!");
 		return false;

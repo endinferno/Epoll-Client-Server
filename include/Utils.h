@@ -9,6 +9,6 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 
-bool setEpollCtl(int epollFd, int operation, int clientFd, uint32_t event);
-bool setClientFdNonBlock(int clientFd);
-bool setClientFdReUse(int fd);
+bool setEpollCtl(int epollFd, int operation, int fd, uint32_t event);
+bool setSocketNonBlock(int fd);
+bool setSocketReUse(int fd);
