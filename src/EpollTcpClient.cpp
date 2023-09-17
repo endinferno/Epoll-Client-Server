@@ -190,8 +190,12 @@ void EpollTcpClient::eventLoop()
 
 void EpollTcpClient::readWorkerThreadFn()
 {
-	while (true) {
-		auto workerEvent = readEventChannel_.pop();
+	while (!isShutdown_) {
+		auto workerEventOption = readEventChannel_.pop();
+		if (!workerEventOption.has_value()) {
+			continue;
+		}
+		auto workerEvent = workerEventOption.value();
 		if (workerEvent.type == READ) {
 			DEBUG("onReadEvent");
 			onReadEvent(workerEvent.msg.rxMsg);
@@ -204,8 +208,12 @@ void EpollTcpClient::readWorkerThreadFn()
 
 void EpollTcpClient::writeWorkerThreadFn()
 {
-	while (true) {
-		auto workerEvent = writeEventChannel_.pop();
+	while (!isShutdown_) {
+		auto workerEventOption = writeEventChannel_.pop();
+		if (!workerEventOption.has_value()) {
+			continue;
+		}
+		auto workerEvent = workerEventOption.value();
 		if (workerEvent.type == WRITE) {
 			DEBUG("onWriteEvent");
 			bool kernelSendBufferFull = false;

@@ -334,8 +334,12 @@ void EpollTcpServer::setSendBufferFull(int clientFd, bool isSendBufFull)
 void EpollTcpServer::clientReadWorkerThreadFn(int handleClient)
 {
 	auto readEventChannel = readEventChannel_[handleClient];
-	while (true) {
-		auto workerEvent = readEventChannel->pop();
+	while (!isShutdown_) {
+		auto workerEventOption = readEventChannel->pop();
+		if (!workerEventOption.has_value()) {
+			continue;
+		}
+		auto workerEvent = workerEventOption.value();
 		if (workerEvent.type == READ) {
 			onReadEvent(workerEvent.msg.rxMsg);
 		} else {
@@ -348,8 +352,12 @@ void EpollTcpServer::clientReadWorkerThreadFn(int handleClient)
 void EpollTcpServer::clientWriteWorkerThreadFn(int handleClient)
 {
 	auto writeEventChannel = writeEventChannel_[handleClient];
-	while (true) {
-		auto workerEvent = writeEventChannel->pop();
+	while (isShutdown_) {
+		auto workerEventOption = writeEventChannel->pop();
+		if (!workerEventOption.has_value()) {
+			continue;
+		}
+		auto workerEvent = workerEventOption.value();
 		if (workerEvent.type == WRITE) {
 			// Send buffer is full, push the event back
 			// Will send when send buffer available

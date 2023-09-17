@@ -1,13 +1,18 @@
 #include "EventChannel.h"
 #include "Logger.h"
 
-struct WorkerEvent EventChannel::pop()
+std::optional<struct WorkerEvent> EventChannel::pop()
 {
 	std::unique_lock<std::mutex> lock(lockMtx);
-	eventCond_.wait(lock, [this] { return !this->eventChannel_.empty(); });
-	auto value = eventChannel_.front();
+	if (!eventCond_.wait_for(lock, eventChannelPopTimeout_, [this] { return !this->eventChannel_.empty(); })) {
+		return std::nullopt;
+	}
+	if (eventChannel_.empty()) {
+		return std::nullopt;
+	}
+	auto workerEvent = eventChannel_.front();
 	eventChannel_.pop();
-	return value;
+	return workerEvent;
 }
 
 void EventChannel::push(struct WorkerEvent& workerEvent)

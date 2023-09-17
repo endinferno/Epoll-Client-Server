@@ -24,7 +24,7 @@ struct WorkerEvent {
 class EventChannel {
 public:
 	EventChannel() = default;
-	struct WorkerEvent pop();
+	std::optional<struct WorkerEvent> pop();
 	void push(struct WorkerEvent& workerEvent);
 	void remove(int clientFd, TxBuffer& txBuffer);
 
@@ -32,4 +32,5 @@ private:
 	std::queue<WorkerEvent> eventChannel_;
 	std::condition_variable eventCond_;
 	std::mutex lockMtx;
+	std::chrono::milliseconds eventChannelPopTimeout_ = std::chrono::milliseconds(1);
 };
