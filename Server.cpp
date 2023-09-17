@@ -52,6 +52,7 @@ protected:
 	void clientReadWorkerThreadFn(int handleClient);
 	void clientWriteWorkerThreadFn(int handleClient);
 	bool isSendBufferFull(int clientFd);
+	void setSendBufferFull(int clientFd, bool isSendBufFull);
 	void disconnectClient(int clientFd);
 	void submitReadEvent(int clientFd);
 	void submitWriteEvent(int clientFd, const void* data, size_t size, struct TxMsg& txMsg);
@@ -352,23 +353,23 @@ void EpollTcpServer::acceptReactorThreadFn()
 	}
 }
 
-void EpollTcpServer::submitReadEvent(int fd)
+void EpollTcpServer::submitReadEvent(int clientFd)
 {
-	int readWorkerIdx = fd % clientReadWorkerThreadNum;
+	int readWorkerIdx = clientFd % clientReadWorkerThreadNum;
 	struct WorkerEvent workerEvent;
 	workerEvent.type = READ;
 	workerEvent.msg.rxMsg = RxMsg {
-		.fd = fd,
+		.fd = clientFd,
 		.payload = rxBuffer_[readWorkerIdx].get(),
 		.len = BUFFER_SIZE,
 	};
 	readEventChannel_[readWorkerIdx]->push(workerEvent);
 }
 
-void EpollTcpServer::submitWriteEvent(int fd, const void* data, size_t size, struct TxMsg& txMsg)
+void EpollTcpServer::submitWriteEvent(int clientFd, const void* data, size_t size, struct TxMsg& txMsg)
 {
-	int writeWorkerIdx = fd % clientWriteWorkerThreadNum;
-	txMsg.fd = fd;
+	int writeWorkerIdx = clientFd % clientWriteWorkerThreadNum;
+	txMsg.fd = clientFd;
 	txMsg.len = size;
 	memcpy(txMsg.payload, data, size);
 	struct WorkerEvent workerEvent;
@@ -400,9 +401,7 @@ void EpollTcpServer::clientReactorThreadFn(int handleClient)
 				submitReadEvent(fd);
 			} else if (event & EPOLLOUT) {
 				DEBUG("epollout fd %d", fd);
-				isKernelSendBufferFullMapMtx_.lock();
-				isKernelSendBufferFullMap_[fd] = false;
-				isKernelSendBufferFullMapMtx_.unlock();
+				setSendBufferFull(fd, false);
 			} else {
 				ERROR("fd %d unknow epoll event %d!", fd, event);
 			}
@@ -432,6 +431,13 @@ bool EpollTcpServer::isSendBufferFull(int clientFd)
 	}
 	isKernelSendBufferFullMapMtx_.unlock_shared();
 	return sendBufferFull;
+}
+
+void EpollTcpServer::setSendBufferFull(int clientFd, bool isSendBufFull)
+{
+	isKernelSendBufferFullMapMtx_.lock();
+	isKernelSendBufferFullMap_[clientFd] = isSendBufFull;
+	isKernelSendBufferFullMapMtx_.unlock();
 }
 
 void EpollTcpServer::clientReadWorkerThreadFn(int handleClient)
@@ -470,9 +476,7 @@ void EpollTcpServer::clientWriteWorkerThreadFn(int handleClient)
 				// Push the event back
 				// Will send when send buffer available
 				writeEventChannel->push(workerEvent);
-				isKernelSendBufferFullMapMtx_.lock();
-				isKernelSendBufferFullMap_[fd] = true;
-				isKernelSendBufferFullMapMtx_.unlock();
+				setSendBufferFull(fd, true);
 			}
 			// If not the above 2 situations
 			// Means the client disconnect
