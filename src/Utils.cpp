@@ -31,3 +31,17 @@ bool setClientFdNonBlock(int clientFd)
 	}
 	return true;
 }
+
+bool setSocketReUse(int fd)
+{
+	int reuse = 1;
+	int ret = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const void*)&reuse, sizeof(reuse));
+	if (ret < 0) {
+		return false;
+	}
+	ret = setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, (const void*)&reuse, sizeof(reuse));
+	if (ret < 0) {
+		return false;
+	}
+	return true;
+}

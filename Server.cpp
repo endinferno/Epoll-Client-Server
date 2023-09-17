@@ -162,13 +162,9 @@ bool EpollTcpServer::start()
 	}
 	INFO("create and bind socket %s:%u success!", localIp_.c_str(), localPort_);
 
-	int reuse = 1;
-	ret = setsockopt(listenFd_, SOL_SOCKET, SO_REUSEADDR, (const void*)&reuse, sizeof(reuse));
-	if (ret < 0) {
-		return false;
-	}
-	ret = setsockopt(listenFd_, SOL_SOCKET, SO_REUSEPORT, (const void*)&reuse, sizeof(reuse));
-	if (ret < 0) {
+	if (!setClientFdReUse(listenFd_)) {
+		ERROR("set socket reuse %s:%u failed!", localIp_.c_str(), localPort_);
+		::close(listenFd_);
 		return false;
 	}
 
