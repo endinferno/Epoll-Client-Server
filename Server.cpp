@@ -57,6 +57,7 @@ protected:
 	void submitReadEvent(int clientFd);
 	void submitWriteEvent(int clientFd, const void* data, size_t size, struct TxMsg& txMsg);
 	bool setClientFdNonBlock(int clientFd);
+	bool setEpollCtl(int epollFd, int operation, int clientFd, uint32_t event);
 
 private:
 	constexpr static uint32_t EPOLL_WAIT_TIME = 10;
@@ -181,17 +182,15 @@ bool EpollTcpServer::start()
 	ret = ::listen(listenFd_, SOMAXCONN);
 	if (ret < 0) {
 		ERROR("listen failed!");
+		::close(listenFd_);
 		return false;
 	}
 	INFO("EpollTcpServer Init success!");
 
-	struct epoll_event evt;
-	evt.events = EPOLLIN | EPOLLET;
-	evt.data.fd = listenFd_;
-	DEBUG("%s listen fd %d events read %d write %d", "add", listenFd_, !!(evt.events & EPOLLIN), !!(evt.events & EPOLLOUT));
-	ret = epoll_ctl(acceptEpollFd_, EPOLL_CTL_ADD, listenFd_, &evt);
-	if (ret < 0) {
+	uint32_t event = EPOLLIN | EPOLLET;
+	if (!setEpollCtl(acceptEpollFd_, EPOLL_CTL_ADD, listenFd_, event)) {
 		ERROR("epoll_ctl failed!");
+		::close(listenFd_);
 		return false;
 	}
 
@@ -243,12 +242,8 @@ void EpollTcpServer::onAcceptEvent()
 		}
 
 		int32_t clientEpollFd = clientEpollFd_[clientFd % clientReactorThreadNum];
-		struct epoll_event evt;
-		evt.events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET;
-		evt.data.fd = clientFd;
-		DEBUG("%s client fd %d events read %d write %d", "add", clientFd, !!(evt.events & EPOLLIN), !!(evt.events & EPOLLOUT));
-		int ret = epoll_ctl(clientEpollFd, EPOLL_CTL_ADD, clientFd, &evt);
-		if (ret < 0) {
+		uint32_t event = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET;
+		if (!setEpollCtl(clientEpollFd, EPOLL_CTL_ADD, clientFd, event)) {
 			ERROR("epoll_ctl failed!");
 			::close(clientFd);
 			continue;
@@ -378,7 +373,7 @@ void EpollTcpServer::clientReactorThreadFn(int handleClient)
 
 			if ((event & EPOLLERR) || (event & EPOLLHUP)) {
 				// ERROR("epoll_wait error EPOLLERR!");
-				DEBUG("epoll_wait error EPOLLERR!");
+				DEBUG("fd: %d epoll_wait error EPOLLERR!", fd);
 				disconnectClient(fd);
 			} else if (event & EPOLLRDHUP) {
 				DEBUG("fd: %d closed EPOLLRDHUP!", fd);
@@ -486,6 +481,23 @@ bool EpollTcpServer::setClientFdNonBlock(int clientFd)
 	int ret = fcntl(listenFd_, F_SETFL, flags | O_NONBLOCK);
 	if (ret < 0) {
 		ERROR("fcntl failed!");
+		return false;
+	}
+	return true;
+}
+
+bool EpollTcpServer::setEpollCtl(int epollFd, int operation, int clientFd, uint32_t event)
+{
+	struct epoll_event evt;
+	evt.events = EPOLLIN | EPOLLET;
+	evt.data.fd = clientFd;
+
+	DEBUG("%s listen fd %d events read %d write %d",
+		(operation == EPOLL_CTL_ADD) ? "add" : ((operation == EPOLL_CTL_MOD) ? "mod" : ((operation == EPOLL_CTL_DEL) ? "del" : "")),
+		clientFd, !!(event & EPOLLIN), !!(event & EPOLLOUT));
+	int ret = epoll_ctl(epollFd, operation, clientFd, &evt);
+	if (ret < 0) {
+		ERROR("epoll_ctl failed!");
 		return false;
 	}
 	return true;
