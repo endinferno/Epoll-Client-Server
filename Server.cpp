@@ -56,6 +56,7 @@ protected:
 	void disconnectClient(int clientFd);
 	void submitReadEvent(int clientFd);
 	void submitWriteEvent(int clientFd, const void* data, size_t size, struct TxMsg& txMsg);
+	bool setClientFdNonBlock(int clientFd);
 
 private:
 	constexpr static uint32_t EPOLL_WAIT_TIME = 10;
@@ -172,14 +173,8 @@ bool EpollTcpServer::start()
 		return false;
 	}
 
-	int flags = fcntl(listenFd_, F_GETFL, 0);
-	if (flags < 0) {
-		ERROR("fcntl failed!");
-		return false;
-	}
-	ret = fcntl(listenFd_, F_SETFL, flags | O_NONBLOCK);
-	if (ret < 0) {
-		ERROR("fcntl failed!");
+	if (!setClientFdNonBlock(listenFd_)) {
+		::close(listenFd_);
 		return false;
 	}
 
@@ -242,15 +237,7 @@ void EpollTcpServer::onAcceptEvent()
 		}
 		INFO("accpet connection from %s:%d", inet_ntoa(clientAddr.sin_addr), ntohs(clientAddr.sin_port));
 
-		int flags = fcntl(clientFd, F_GETFL, 0);
-		if (flags < 0) {
-			ERROR("fcntl failed!");
-			::close(clientFd);
-			continue;
-		}
-		int ret = fcntl(clientFd, F_SETFL, flags | O_NONBLOCK);
-		if (ret < 0) {
-			ERROR("fcntl failed!");
+		if (!setClientFdNonBlock(clientFd)) {
 			::close(clientFd);
 			continue;
 		}
@@ -260,7 +247,7 @@ void EpollTcpServer::onAcceptEvent()
 		evt.events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET;
 		evt.data.fd = clientFd;
 		DEBUG("%s client fd %d events read %d write %d", "add", clientFd, !!(evt.events & EPOLLIN), !!(evt.events & EPOLLOUT));
-		ret = epoll_ctl(clientEpollFd, EPOLL_CTL_ADD, clientFd, &evt);
+		int ret = epoll_ctl(clientEpollFd, EPOLL_CTL_ADD, clientFd, &evt);
 		if (ret < 0) {
 			ERROR("epoll_ctl failed!");
 			::close(clientFd);
@@ -487,6 +474,21 @@ void EpollTcpServer::clientWriteWorkerThreadFn(int handleClient)
 			exit(1);
 		}
 	}
+}
+
+bool EpollTcpServer::setClientFdNonBlock(int clientFd)
+{
+	int flags = fcntl(listenFd_, F_GETFL, 0);
+	if (flags < 0) {
+		ERROR("fcntl failed!");
+		return false;
+	}
+	int ret = fcntl(listenFd_, F_SETFL, flags | O_NONBLOCK);
+	if (ret < 0) {
+		ERROR("fcntl failed!");
+		return false;
+	}
+	return true;
 }
 
 int main(int argc, char* argv[])
