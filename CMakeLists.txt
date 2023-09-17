@@ -11,6 +11,7 @@ include_directories(include)
 
 add_executable(Client
 	src/Utils.cpp
+	src/EpollTcpClient.cpp
 	src/EventChannel.cpp
 	src/TxMsg.cpp
 	Client.cpp)
