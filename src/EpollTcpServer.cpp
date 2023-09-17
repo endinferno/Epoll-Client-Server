@@ -62,6 +62,12 @@ bool EpollTcpServer::start()
 		return false;
 	}
 
+	if (!setSocketReUse(listenFd_)) {
+		ERROR("set socket reuse %s:%u failed!", localIp_.c_str(), localPort_);
+		::close(listenFd_);
+		return false;
+	}
+
 	struct sockaddr_in serverAddr;
 	memset(&serverAddr, 0, sizeof(serverAddr));
 	serverAddr.sin_family = AF_INET;
@@ -75,12 +81,6 @@ bool EpollTcpServer::start()
 		return false;
 	}
 	INFO("create and bind socket %s:%u success!", localIp_.c_str(), localPort_);
-
-	if (!setSocketReUse(listenFd_)) {
-		ERROR("set socket reuse %s:%u failed!", localIp_.c_str(), localPort_);
-		::close(listenFd_);
-		return false;
-	}
 
 	if (!setSocketNonBlock(listenFd_)) {
 		::close(listenFd_);
@@ -352,7 +352,7 @@ void EpollTcpServer::clientReadWorkerThreadFn(int handleClient)
 void EpollTcpServer::clientWriteWorkerThreadFn(int handleClient)
 {
 	auto writeEventChannel = writeEventChannel_[handleClient];
-	while (isShutdown_) {
+	while (!isShutdown_) {
 		auto workerEventOption = writeEventChannel->pop();
 		if (!workerEventOption.has_value()) {
 			continue;

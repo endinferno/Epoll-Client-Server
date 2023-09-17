@@ -12,6 +12,7 @@
 #include <arpa/inet.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <sys/timerfd.h>
 #include <unistd.h>
 
 #include "EventChannel.h"
@@ -37,6 +38,7 @@ public:
 	int32_t sendData(const void* data, size_t size);
 	void registerOnRecvCallback(CallbackRecv callback);
 	void unRegisterOnRecvCallback();
+	void setAutoConnect(int milliseconds = -1);
 
 protected:
 	void onReadEvent(struct RxMsg& rxMsg);
@@ -44,6 +46,9 @@ protected:
 	void eventLoop();
 	void readWorkerThreadFn();
 	void writeWorkerThreadFn();
+	bool reconnectServer();
+	void handleTimeout();
+	void setTimer(int milliseconds);
 
 private:
 	constexpr static uint32_t EPOLL_WAIT_TIME = 10;
@@ -65,4 +70,6 @@ private:
 	EventChannel writeEventChannel_;
 	bool isKernelSendBufferFull_ = false;
 	std::shared_mutex kernelSendBufferFullMtx_;
+	int timerFd_ = -1;
+	int clientReconnectTimeout_ = -1;
 };

@@ -28,13 +28,15 @@ int main(int argc, char* argv[])
 	INFO("############tcpClient started!################");
 
 	std::string msg('a', 100);
-	int cnt = 100;
-	while (cnt--) {
-		// while (true) {
+	tcpClient->setAutoConnect(2000);
+	// int cnt = 100;
+	// while (cnt--) {
+	while (true) {
 		// INFO("input:");
 		// std::getline(std::cin, msg);
+		usleep(80000);
 		int ret = tcpClient->sendData(msg.data(), msg.size());
-		INFO("sendData ret %d", ret);
+		// INFO("sendData ret %d", ret);
 	}
 
 	tcpClient->stop();

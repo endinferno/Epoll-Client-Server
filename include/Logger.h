@@ -32,7 +32,7 @@
 		fprintf(stderr, "FUNC: %s, LINE: %d: " fmt "\n", __func__, __LINE__, ##__VA_ARGS__); \
 	} while (0)
 #else
-#define DEBUG(fmt, ...) \
+#define ERROR(fmt, ...) \
 	do {                \
 	} while (0);
 #endif

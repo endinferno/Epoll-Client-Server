@@ -13,6 +13,11 @@ EpollTcpClient::~EpollTcpClient()
 
 bool EpollTcpClient::start()
 {
+	timerFd_ = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+	if (timerFd_ < 0) {
+		ERROR("create_timer failed");
+		return false;
+	}
 	epollFd_ = epoll_create(1024);
 	if (epollFd_ < 0) {
 		ERROR("epoll_create failed!");
@@ -41,7 +46,14 @@ bool EpollTcpClient::start()
 
 	INFO("EpollTcpClient Init success!");
 
-	uint32_t event = EPOLLIN | EPOLLOUT | EPOLLET;
+	uint32_t event = EPOLLIN | EPOLLET;
+	if (!setEpollCtl(epollFd_, EPOLL_CTL_ADD, timerFd_, event)) {
+		ERROR("epoll_ctl failed!");
+		::close(timerFd_);
+		return false;
+	}
+
+	event = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET;
 	if (!setEpollCtl(epollFd_, EPOLL_CTL_ADD, connFd_, event)) {
 		ERROR("epoll_ctl failed!");
 		::close(connFd_);
@@ -120,20 +132,21 @@ void EpollTcpClient::onReadEvent(struct RxMsg& rxMsg)
 
 bool EpollTcpClient::onWriteEvent(struct TxMsg& txMsg)
 {
-	int ret = ::write(connFd_, txMsg.payload, txMsg.len);
-	INFO("fd: %d writeable! len %zu ret %d errno %d", txMsg.fd, txMsg.len, ret, errno);
-	if (ret == -1) {
-		if (errno == EAGAIN || errno == EWOULDBLOCK) {
-			return false;
-		}
-		::close(connFd_);
-		ERROR("fd: %d write error, close it!", connFd_);
-		return false;
-	} else if (ret == (int)txMsg.len) {
+	size_t size = txMsg.len;
+	const void* data = txMsg.payload;
+	int writeBytes = ::write(connFd_, data, size);
+	INFO("fd: %d writeable! len %zu writeBytes %d errno %d", txMsg.fd, txMsg.len, writeBytes, errno);
+	if (writeBytes == (int)size) {
 		txBuffer_.putTxMsg(txMsg);
-		return true;
+		return 0;
+	} else if (writeBytes == -1) {
+		return errno;
 	}
-	return false;
+	// Send part of data successfully, change the TxMsg to unsend part
+	memmove(txMsg.payload, txMsg.payload + writeBytes, size - writeBytes);
+	txMsg.len -= writeBytes;
+	DEBUG("fd: %d errno: %d write size: %d ok!", connFd_, errno, writeBytes);
+	return EAGAIN;
 }
 
 int32_t EpollTcpClient::sendData(const void* data, size_t size)
@@ -163,19 +176,25 @@ void EpollTcpClient::eventLoop()
 			int event = events[i].events;
 
 			if ((event & EPOLLERR) || (event & EPOLLHUP)) {
-				INFO("epoll_wait error!");
+				INFO("fd: %d event: %d epoll_wait error!", fd, event);
 				::close(fd);
+				setTimer(clientReconnectTimeout_);
 			} else if (event & EPOLLRDHUP) {
 				INFO("fd: %d closed EPOLLRDHUP!", fd);
 				::close(fd);
+				setTimer(clientReconnectTimeout_);
 			} else if (event & EPOLLIN) {
 				INFO("EPOLLIN event");
-				struct RxMsg rxMsg;
-				rxMsg.fd = fd;
-				struct WorkerEvent workerEvent;
-				workerEvent.type = READ;
-				workerEvent.msg.rxMsg = rxMsg;
-				readEventChannel_.push(workerEvent);
+				if (fd == timerFd_) {
+					handleTimeout();
+				} else {
+					struct RxMsg rxMsg;
+					rxMsg.fd = fd;
+					struct WorkerEvent workerEvent;
+					workerEvent.type = READ;
+					workerEvent.msg.rxMsg = rxMsg;
+					readEventChannel_.push(workerEvent);
+				}
 			} else if (event & EPOLLOUT) {
 				INFO("EPOLLOUT event");
 				kernelSendBufferFullMtx_.lock();
@@ -224,7 +243,22 @@ void EpollTcpClient::writeWorkerThreadFn()
 				writeEventChannel_.push(workerEvent);
 				continue;
 			}
-			if (!onWriteEvent(workerEvent.msg.txMsg)) {
+			int ret = onWriteEvent(workerEvent.msg.txMsg);
+			if (ret == 0) {
+				// Means write successfully
+				continue;
+			} else {
+				// Push the event back
+				// Will send when send buffer available
+				// including 2 situations
+				// 1. kernel send buffer full
+				// 2. server side is lost
+				// When in the first situation, we will set kernelSendBufferFull
+				// And will never call write function until we get EPOLLOUT
+				// When in the second situation, we will set kernelSendBufferFull also
+				// And will never call write function until we get EPOLLOUT
+				// It is meaningful, because when we connect to server again
+				// We will receive EPOLLOUT event, and write can be called again
 				writeEventChannel_.push(workerEvent);
 				kernelSendBufferFullMtx_.lock();
 				isKernelSendBufferFull_ = true;
@@ -234,5 +268,72 @@ void EpollTcpClient::writeWorkerThreadFn()
 			ERROR("Not write event");
 			exit(1);
 		}
+	}
+}
+
+void EpollTcpClient::setAutoConnect(int milliseconds)
+{
+	clientReconnectTimeout_ = milliseconds;
+}
+
+bool EpollTcpClient::reconnectServer()
+{
+	connFd_ = ::socket(AF_INET, SOCK_STREAM, 0);
+	if (connFd_ < 0) {
+		ERROR("create socket failed!");
+		return false;
+	}
+
+	struct sockaddr_in serverAddr;
+	serverAddr.sin_family = AF_INET;
+	serverAddr.sin_port = htons(serverPort_);
+	serverAddr.sin_addr.s_addr = inet_addr(serverIp_.c_str());
+
+	int ret = ::connect(connFd_, (struct sockaddr*)&serverAddr, sizeof(serverAddr));
+	if (ret < 0) {
+		ERROR("connect failed! ret=%d errno:%d", ret, errno);
+		::close(connFd_);
+		return false;
+	}
+	if (!setSocketNonBlock(connFd_)) {
+		ERROR("set socket nonblock failed");
+		::close(connFd_);
+		return false;
+	}
+	uint32_t event = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET;
+	if (!setEpollCtl(epollFd_, EPOLL_CTL_ADD, connFd_, event)) {
+		ERROR("epoll_ctl failed!");
+		::close(connFd_);
+		return false;
+	}
+	return true;
+}
+
+void EpollTcpClient::handleTimeout()
+{
+	uint64_t timerVal;
+	int readBytes = read(timerFd_, &timerVal, sizeof(uint64_t));
+	if (readBytes != sizeof(uint64_t)) {
+		return;
+	}
+	if (reconnectServer()) {
+		setTimer(0);
+	}
+}
+
+void EpollTcpClient::setTimer(int milliseconds)
+{
+	struct itimerspec timerSpec;
+	long long sec = milliseconds / 1000;
+	long long nsec = (milliseconds - sec * 1000) * 1000000;
+
+	timerSpec.it_value.tv_sec = sec;
+	timerSpec.it_value.tv_nsec = nsec;
+	timerSpec.it_interval.tv_sec = sec;
+	timerSpec.it_interval.tv_nsec = nsec;
+
+	int ret = timerfd_settime(timerFd_, 0, &timerSpec, nullptr);
+	if (ret == -1) {
+		ERROR("timer_settime failed!");
 	}
 }
