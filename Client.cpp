@@ -44,7 +44,8 @@ protected:
 	void onReadEvent(struct RxMsg& rxMsg);
 	bool onWriteEvent(struct TxMsg& txMsg);
 	void eventLoop();
-	void workerThreadFn();
+	void readWorkerThreadFn();
+	void writeWorkerThreadFn();
 
 private:
 	constexpr static uint32_t EPOLL_WAIT_TIME = 10;
@@ -55,13 +56,15 @@ private:
 	int32_t connFd_ = -1;
 	int32_t epollFd_ = -1;
 	std::unique_ptr<std::thread> reactorThread_ = nullptr;
-	std::unique_ptr<std::thread> workerThread_ = nullptr;
+	std::unique_ptr<std::thread> readWorkerThread_ = nullptr;
+	std::unique_ptr<std::thread> writeWorkerThread_ = nullptr;
 	bool isShutdown_ = false;
 	CallbackRecv recvCallback_ = nullptr;
 	struct epoll_event events[MAX_EPOLL_EVENT];
 	TxBuffer txBuffer_;
 	char rxBuffer_[BUFFER_SIZE];
-	EventChannel eventChannel_;
+	EventChannel readEventChannel_;
+	EventChannel writeEventChannel_;
 	bool isKernelSendBufferFull_ = false;
 	std::shared_mutex kernelSendBufferFullMtx_;
 };
@@ -128,12 +131,20 @@ bool EpollTcpClient::start()
 	}
 
 	assert(!reactorThread_);
-	workerThread_ = std::make_unique<std::thread>(&EpollTcpClient::workerThreadFn, this);
-	if (!workerThread_) {
+	assert(!readWorkerThread_);
+	assert(!writeWorkerThread_);
+	readWorkerThread_ = std::make_unique<std::thread>(&EpollTcpClient::readWorkerThreadFn, this);
+	if (!readWorkerThread_) {
 		ERROR("Fail to start worker thread");
 		return false;
 	}
-	workerThread_->detach();
+	readWorkerThread_->detach();
+	writeWorkerThread_ = std::make_unique<std::thread>(&EpollTcpClient::writeWorkerThreadFn, this);
+	if (!writeWorkerThread_) {
+		ERROR("Fail to start worker thread");
+		return false;
+	}
+	writeWorkerThread_->detach();
 
 	reactorThread_ = std::make_unique<std::thread>(&EpollTcpClient::eventLoop, this);
 	if (!reactorThread_) {
@@ -220,7 +231,7 @@ int32_t EpollTcpClient::sendData(const void* data, size_t size)
 	struct WorkerEvent workerEvent;
 	workerEvent.type = WRITE;
 	workerEvent.msg.txMsg = txMsg;
-	eventChannel_.push(workerEvent);
+	writeEventChannel_.push(workerEvent);
 	return 0;
 }
 
@@ -240,12 +251,13 @@ void EpollTcpClient::eventLoop()
 				INFO("fd: %d closed EPOLLRDHUP!", fd);
 				::close(fd);
 			} else if (event & EPOLLIN) {
+				INFO("EPOLLIN event");
 				struct RxMsg rxMsg;
 				rxMsg.fd = fd;
 				struct WorkerEvent workerEvent;
 				workerEvent.type = READ;
 				workerEvent.msg.rxMsg = rxMsg;
-				eventChannel_.push(workerEvent);
+				readEventChannel_.push(workerEvent);
 			} else if (event & EPOLLOUT) {
 				INFO("EPOLLOUT event");
 				kernelSendBufferFullMtx_.lock();
@@ -258,27 +270,43 @@ void EpollTcpClient::eventLoop()
 	}
 }
 
-void EpollTcpClient::workerThreadFn()
+void EpollTcpClient::readWorkerThreadFn()
 {
 	while (true) {
-		auto workerEvent = eventChannel_.pop();
+		auto workerEvent = readEventChannel_.pop();
 		if (workerEvent.type == READ) {
+			DEBUG("onReadEvent");
 			onReadEvent(workerEvent.msg.rxMsg);
-		} else if (workerEvent.type == WRITE) {
+		} else {
+			ERROR("Not read event");
+			exit(1);
+		}
+	}
+}
+
+void EpollTcpClient::writeWorkerThreadFn()
+{
+	while (true) {
+		auto workerEvent = writeEventChannel_.pop();
+		if (workerEvent.type == WRITE) {
+			DEBUG("onWriteEvent");
 			bool kernelSendBufferFull = false;
 			kernelSendBufferFullMtx_.lock_shared();
 			kernelSendBufferFull = isKernelSendBufferFull_;
 			kernelSendBufferFullMtx_.unlock_shared();
 			if (kernelSendBufferFull) {
-				eventChannel_.push(workerEvent);
+				writeEventChannel_.push(workerEvent);
 				continue;
 			}
 			if (!onWriteEvent(workerEvent.msg.txMsg)) {
-				eventChannel_.push(workerEvent);
+				writeEventChannel_.push(workerEvent);
 				kernelSendBufferFullMtx_.lock();
 				isKernelSendBufferFull_ = true;
 				kernelSendBufferFullMtx_.unlock();
 			}
+		} else {
+			ERROR("Not write event");
+			exit(1);
 		}
 	}
 }
