@@ -53,6 +53,8 @@ protected:
 	void clientWriteWorkerThreadFn(int handleClient);
 	bool isSendBufferFull(int clientFd);
 	void disconnectClient(int clientFd);
+	void submitReadEvent(int clientFd);
+	void submitWriteEvent(int clientFd, const void* data, size_t size, struct TxMsg& txMsg);
 
 private:
 	constexpr static uint32_t EPOLL_WAIT_TIME = 10;
@@ -323,15 +325,7 @@ int32_t EpollTcpServer::sendData(int fd, const void* data, size_t size)
 	if (!txMsgOption.has_value()) {
 		return -1;
 	}
-	auto txMsg = txMsgOption.value();
-	txMsg.fd = fd;
-	txMsg.len = size;
-	memcpy(txMsg.payload, data, size);
-	struct WorkerEvent workerEvent;
-	workerEvent.type = WRITE;
-	workerEvent.msg.txMsg = txMsg;
-	auto writeEventChannel = writeEventChannel_[fd % clientWriteWorkerThreadNum];
-	writeEventChannel->push(workerEvent);
+	submitWriteEvent(fd, data, size, txMsgOption.value());
 	return 0;
 }
 
@@ -358,6 +352,31 @@ void EpollTcpServer::acceptReactorThreadFn()
 	}
 }
 
+void EpollTcpServer::submitReadEvent(int fd)
+{
+	int readWorkerIdx = fd % clientReadWorkerThreadNum;
+	struct WorkerEvent workerEvent;
+	workerEvent.type = READ;
+	workerEvent.msg.rxMsg = RxMsg {
+		.fd = fd,
+		.payload = rxBuffer_[readWorkerIdx].get(),
+		.len = BUFFER_SIZE,
+	};
+	readEventChannel_[readWorkerIdx]->push(workerEvent);
+}
+
+void EpollTcpServer::submitWriteEvent(int fd, const void* data, size_t size, struct TxMsg& txMsg)
+{
+	int writeWorkerIdx = fd % clientWriteWorkerThreadNum;
+	txMsg.fd = fd;
+	txMsg.len = size;
+	memcpy(txMsg.payload, data, size);
+	struct WorkerEvent workerEvent;
+	workerEvent.type = WRITE;
+	workerEvent.msg.txMsg = txMsg;
+	writeEventChannel_[writeWorkerIdx]->push(workerEvent);
+}
+
 void EpollTcpServer::clientReactorThreadFn(int handleClient)
 {
 	int epollFd = clientEpollFd_[handleClient];
@@ -378,16 +397,7 @@ void EpollTcpServer::clientReactorThreadFn(int handleClient)
 				disconnectClient(fd);
 			} else if (event & EPOLLIN) {
 				DEBUG("epollin fd %d", fd);
-				int readWorkerIdx = fd % clientReadWorkerThreadNum;
-				struct RxMsg rxMsg;
-				rxMsg.fd = fd;
-				rxMsg.payload = rxBuffer_[readWorkerIdx].get();
-				rxMsg.len = BUFFER_SIZE;
-				struct WorkerEvent workerEvent;
-				workerEvent.type = READ;
-				workerEvent.msg.rxMsg = rxMsg;
-				auto readEventChannel = readEventChannel_[readWorkerIdx];
-				readEventChannel->push(workerEvent);
+				submitReadEvent(fd);
 			} else if (event & EPOLLOUT) {
 				DEBUG("epollout fd %d", fd);
 				isKernelSendBufferFullMapMtx_.lock();
