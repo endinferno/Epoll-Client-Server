@@ -25,7 +25,6 @@ bool EpollTcpClient::start()
 	}
 
 	struct sockaddr_in serverAddr;
-	memset(&serverAddr, 0, sizeof(serverAddr));
 	serverAddr.sin_family = AF_INET;
 	serverAddr.sin_port = htons(serverPort_);
 	serverAddr.sin_addr.s_addr = inet_addr(serverIp_.c_str());
