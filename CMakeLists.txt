@@ -17,6 +17,7 @@ add_executable(Client
 
 add_executable(Server
 	src/Utils.cpp
+	src/EpollTcpServer.cpp
 	src/EventChannel.cpp
 	src/TxMsg.cpp
 	Server.cpp)
